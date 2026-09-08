@@ -477,7 +477,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     user_name = get_user_display_name(update)
     welcome_text = (
         f"🥗 <b>James Boh Macro Tracker</b>\n"
-        f"<i>Created by James Boh (<a href=\"https://www.linkedin.com/in/jamesboh/\">LinkedIn</a> | <a href=\"https://github.com/jamesjjboh\">GitHub</a>)</i>\n\n"
+        f"<i>Created by James Boh (<a href=\"https://www.linkedin.com/in/jamesboh/\">LinkedIn</a> | <a href=\"https://github.com/Jamesjjboh/James-Boh-Macro-Tracker\">GitHub</a>)</i>\n\n"
         f"👋 <b>Welcome, {html.escape(user_name)}!</b>\n\n"
         "I'm your personal <b>Macros & Calories Logging Bot</b>, powered by Gemini 3.6 Flash Vision.\n\n"
         "✨ <b>How to Log Food:</b>\n"
@@ -500,7 +500,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     """Handles /help command."""
     help_text = (
         "🥗 <b>James Boh Macro Tracker — Help Guide</b>\n"
-        "<i>Created by James Boh (<a href=\"https://www.linkedin.com/in/jamesboh/\">LinkedIn</a> | <a href=\"https://github.com/jamesjjboh\">GitHub</a>)</i>\n\n"
+        "<i>Created by James Boh (<a href=\"https://www.linkedin.com/in/jamesboh/\">LinkedIn</a> | <a href=\"https://github.com/Jamesjjboh/James-Boh-Macro-Tracker\">GitHub</a>)</i>\n\n"
         "📖 <b>How to Use:</b>\n\n"
         "• <b>Photo Logging:</b> Simply send a photo of your plate, drink, or snack.\n"
         "  💡 <b>Caption Tip:</b> When uploading a photo, type in the Telegram caption to specify what it is or the meal type (e.g. <code>Lunch: with NutriSoy soy milk no sugar</code> or <code>half portion</code>). The bot treats your caption as absolute ground truth!\n\n"
