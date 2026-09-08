@@ -2,7 +2,7 @@
 
 _Created by James Boh ([LinkedIn](https://www.linkedin.com/in/jamesboh/) | [GitHub Repository](https://github.com/Jamesjjboh/James-Boh-Macro-Tracker))_
 
-A high-performance Telegram bot for logging daily calories, macronutrients (Protein, Carbs, Fat), and a dedicated **Nutrition & Fat Loss Score** (0–100) directly into a shared Google Sheet.
+A high-performance Telegram bot for logging daily calories, macronutrients (Protein, Carbs, Fat, Fiber), and a dedicated **Nutrition & Fat Loss Score** (0–100) directly into a shared Google Sheet.
 
 Powered by:
 
@@ -15,26 +15,20 @@ Powered by:
 ## 🌟 Key Features
 
 1. **Dual-Input Logging**:
-   - 📸 **Photo Logging**: Take a photo of your meal or beverage. You can also add a caption with portion notes (e.g. _"Only ate half"_ or _"No dressing"_).
-   - ✍️ **Text Logging**: Describe what you ate in natural language (e.g., _"Hainanese chicken rice with iced lemon tea"_).
    - 📸 **Photo Logging**: Take a photo of your meal or beverage. You can type in the photo caption to specify what it is or the meal type (e.g. _"Lunch: with NutriSoy soy milk no sugar"_ or _"Half portion only"_), which the bot treats as ground truth!
    - ✍️ **Text Logging**: Describe what you ate in natural language (e.g., _"Hainanese chicken rice with iced lemon tea"_).
 2. **Composite Meal Breakdown**:
-   - Multiple items in a single photo or text prompt are separated into individual rows (e.g., separating chicken, rice, and sweet tea).
    - Multiple items in a single photo or text prompt are separated into individual rows (e.g., separating chicken, rice, and soy milk).
 3. **Dynamic Nutrition & Fat Loss Score (0–100)**:
-   - Evaluates protein-to-calorie density, satiety/fullness index, whole-food quality, minimal added sugar, and cut suitability.
    - Evaluates protein-to-calorie density, dietary fiber (g), satiety/fullness index, whole-food quality, minimal added sugar, and cut suitability.
 4. **Partner Tracking (Distinguishable Users)**:
    - Logs Telegram name/handle (`@username`) per row so you and your partner's logs are tracked independently in the same sheet.
 5. **Real-time Cumulative Totals**:
-   - Calculates today's cumulative calories and macros specifically for the person who logged.
+   - Calculates today's cumulative calories and macros (including protein, carbs, fat, and fiber) specifically for the person who logged.
 6. **Encouraging Coach's Note**:
    - Personalized motivational remarks and fat-cutting tips delivered with every log.
 
 ---
-
-## 📋 Google Sheet Structure (10 Columns)
 
 ## 📋 Google Sheet Structure (11 Columns)
 
@@ -50,8 +44,6 @@ When initialized, the bot checks your Google Sheet and automatically sets up bol
 | 6   | **Protein (g)**            | `38.0`                                |
 | 7   | **Carbohydrates (g)**      | `0.0`                                 |
 | 8   | **Fat (g)**                | `4.5`                                 |
-| 9   | **Short Description**      | `~150g skinless breast with cucumber` |
-| 10  | **Nutrition Score (/100)** | `94`                                  |
 | 9   | **Fiber (g)**              | `0.0`                                 |
 | 10  | **Short Description**      | `~150g skinless breast with cucumber` |
 | 11  | **Nutrition Score (/100)** | `94`                                  |
@@ -65,10 +57,9 @@ When initialized, the bot checks your Google Sheet and automatically sets up bol
 Make sure you have Python 3.9+ (or 3.10+) installed.
 
 ```bash
-# Clone or navigate to the directory
-cd Fitness_Macro_tracker
-cd "James Calories & Macros Tracker"
-cd "James Boh Products/James Boh Macros Tracker"
+# Clone the repository
+git clone https://github.com/Jamesjjboh/James-Boh-Macro-Tracker.git
+cd James-Boh-Macro-Tracker
 
 # Create virtual environment
 python3 -m venv .venv
@@ -105,7 +96,7 @@ To allow the bot to read and write rows in your Google Sheet automatically:
 #### A. Create a Google Cloud Project & Enable APIs
 
 1. Go to the [Google Cloud Console](https://console.cloud.google.com/).
-2. Create a new project (e.g., `Fitness-Tracker-Bot`).
+2. Create a new project (e.g., `James-Boh-Macro-Tracker`).
 3. In the search bar at the top, search for and enable these two APIs:
    - **Google Sheets API**
    - **Google Drive API**
@@ -124,14 +115,13 @@ To allow the bot to read and write rows in your Google Sheet automatically:
 3. Click **"ADD KEY"** > **"Create new key"**.
 4. Choose **JSON** and click **Create**.
 5. A `.json` file will download to your computer.
-6. Rename this downloaded file to **`service_account.json`** and move it into the `Fitness_Macro_tracker` root directory.
-7. Rename this downloaded file to **`service_account.json`** and move it into the project root directory (`James Calories & Macros Tracker`).
-8. Note down the service account email inside this file (it looks like `macro-tracker-sheets@<your-project-id>.iam.gserviceaccount.com`).
+6. Rename this downloaded file to **`service_account.json`** and move it into the project root directory (`James-Boh-Macro-Tracker`).
+7. Note down the service account email inside this file (it looks like `macro-tracker-sheets@<your-project-id>.iam.gserviceaccount.com`).
 
 #### D. Create & Share Your Google Sheet
 
 1. Open [Google Sheets](https://sheets.new) and create a new spreadsheet.
-2. Name the spreadsheet (e.g., `Macros & Calories Tracker`).
+2. Name the spreadsheet (e.g., `James Boh Macro Tracker`).
 3. Click the **"Share"** button in the top right.
 4. Paste the **Service Account email** you noted in the step above.
 5. Set the permission to **Editor** and uncheck "Notify people" (since it's a bot account), then click **Share**.
@@ -140,10 +130,10 @@ To allow the bot to read and write rows in your Google Sheet automatically:
 
 ### 5. Configure Environment Variables
 
-Copy `.env.template` to `.env`:
+Copy `.env.example` to `.env`:
 
 ```bash
-cp .env.template .env
+cp .env.example .env
 ```
 
 Open `.env` and fill in your details:
@@ -151,7 +141,7 @@ Open `.env` and fill in your details:
 ```ini
 TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrsTUVwxyz
 GEMINI_API_KEY=AIzaSy...
-GOOGLE_SHEET_NAME=Macros & Calories Tracker
+GOOGLE_SHEET_NAME=James Boh Macro Tracker
 GOOGLE_SERVICE_ACCOUNT_FILE=service_account.json
 TIMEZONE=Asia/Singapore
 ALLOWED_USERS=
@@ -177,7 +167,7 @@ You should see:
 ```text
 ✅ Found Google Service Account file: 'service_account.json'
 🚀 Starting Telegram Macros & Calories Logging Bot...
-📅 Target Google Sheet: 'Macros & Calories Tracker'
+📅 Target Google Sheet: 'James Boh Macro Tracker'
 🌐 Configured Timezone: Asia/Singapore
 🤖 Bot is running! Press Ctrl+C to stop.
 ```
@@ -186,13 +176,13 @@ You should see:
 
 ## 💬 Bot Commands & Interactions
 
-| Action                 | Description                                                                             |
-| ---------------------- | --------------------------------------------------------------------------------------- |
-| **Send Photo**         | Sends food photo to Gemini 3.6 Flash Vision. Extracts macros, score, and logs to sheet. |
-| **Send Text**          | E.g. _"Chicken breast with sweet potato and black coffee"_. Breaks down items and logs. |
-| `/today` or `/summary` | Shows cumulative calories, protein, carbs, and fat logged by you today.                 |
-| `/start`               | Displays welcome message and instructions.                                              |
-| `/help`                | Detailed guide on logging tips and formatting.                                          |
+| Action                 | Description                                                                                       |
+| ---------------------- | ------------------------------------------------------------------------------------------------- |
+| **Send Photo**         | Sends food photo to Gemini 3.6 Flash Vision. Extracts macros, fiber, score, and logs to sheet.    |
+| **Send Text**          | E.g. _"Chicken breast with sweet potato and black coffee"_. Breaks down items, fiber, and logs.   |
+| `/today` or `/summary` | Shows cumulative calories, protein, carbs, fat, and fiber logged by you today.                    |
+| `/start`               | Displays welcome message and instructions.                                                        |
+| `/help`                | Detailed guide on logging tips and formatting.                                                    |
 
 ---
 
