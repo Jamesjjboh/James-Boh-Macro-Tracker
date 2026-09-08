@@ -1,6 +1,6 @@
 # 🥗 James Boh Macro Tracker
 
-*Created by James Boh ([LinkedIn](https://www.linkedin.com/in/jamesboh/) | [GitHub Repository](https://github.com/Jamesjjboh/James-Boh-Macro-Tracker))*
+_Created by James Boh ([LinkedIn](https://www.linkedin.com/in/jamesboh/) | [GitHub Repository](https://github.com/Jamesjjboh/James-Boh-Macro-Tracker))_
 
 A high-performance Telegram bot for logging daily calories, macronutrients (Protein, Carbs, Fat), and a dedicated **Nutrition & Fat Loss Score** (0–100) directly into a shared Google Sheet.
 
