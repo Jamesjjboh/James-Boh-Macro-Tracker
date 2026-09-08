@@ -43,7 +43,6 @@ logger = logging.getLogger(__name__)
 # Environment Configuration
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME", "Macros & Calories Tracker").strip()
 GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME", "James Boh Macro Tracker").strip()
 GOOGLE_SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "service_account.json").strip()
 TIMEZONE_STR = os.getenv("TIMEZONE", "Asia/Singapore").strip()
