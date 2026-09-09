@@ -45,7 +45,13 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME", "James Boh Macro Tracker").strip()
 GOOGLE_SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "service_account.json").strip()
+GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
 TIMEZONE_STR = os.getenv("TIMEZONE", "Asia/Singapore").strip()
+
+# Cloud Run Webhook Configuration
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip()
+PORT = int(os.getenv("PORT", "8080"))
+TELEGRAM_WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
 
 # User access control (optional)
 # Comma-separated list of allowed usernames or user IDs (e.g., "james,partner_username")
@@ -171,26 +177,37 @@ Your task:
 # Google Sheets Integration
 # =====================================================================
 class GoogleSheetsService:
-    def __init__(self, credentials_path: str, sheet_name: str):
+    def __init__(
+        self,
+        credentials_path: str,
+        sheet_name: str,
+        credentials_json: Optional[str] = None,
+    ):
         self.credentials_path = credentials_path
         self.sheet_name = sheet_name
+        self.credentials_json = credentials_json
         self.worksheet = None
         self._lock = asyncio.Lock()
 
     def is_configured(self) -> bool:
-        return os.path.exists(self.credentials_path)
+        return bool(self.credentials_json) or os.path.exists(self.credentials_path)
 
     def _get_worksheet_sync(self) -> gspread.Worksheet:
         if not self.is_configured():
             raise FileNotFoundError(
-                f"Google Service Account file not found at '{self.credentials_path}'"
+                f"Google Service Account credentials not found. Please provide GOOGLE_SERVICE_ACCOUNT_JSON or a file at '{self.credentials_path}'"
             )
 
         scopes = [
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive",
         ]
-        gc = gspread.service_account(filename=self.credentials_path, scopes=scopes)
+        if self.credentials_json:
+            import json
+            service_account_info = json.loads(self.credentials_json)
+            gc = gspread.service_account_from_dict(service_account_info, scopes=scopes)
+        else:
+            gc = gspread.service_account(filename=self.credentials_path, scopes=scopes)
         
         try:
             sh = gc.open(self.sheet_name)
@@ -313,7 +330,11 @@ class GoogleSheetsService:
 
 
 # Global Sheets Service instance
-sheets_service = GoogleSheetsService(GOOGLE_SERVICE_ACCOUNT_FILE, GOOGLE_SHEET_NAME)
+sheets_service = GoogleSheetsService(
+    credentials_path=GOOGLE_SERVICE_ACCOUNT_FILE,
+    sheet_name=GOOGLE_SHEET_NAME,
+    credentials_json=GOOGLE_SERVICE_ACCOUNT_JSON if GOOGLE_SERVICE_ACCOUNT_JSON else None,
+)
 
 
 # =====================================================================
@@ -767,12 +788,14 @@ def main() -> None:
         print("Please copy .env.template to .env and fill in your GEMINI_API_KEY from Google AI Studio.\n")
         sys.exit(1)
 
-    if not os.path.exists(GOOGLE_SERVICE_ACCOUNT_FILE):
-        print(f"\n⚠️ WARNING: '{GOOGLE_SERVICE_ACCOUNT_FILE}' was not found in the project root.")
-        print("Google Sheets integration will be disabled until you place 'service_account.json'.")
-        print("See instructions in README.md to configure your Google Service Account.\n")
-    else:
+    if GOOGLE_SERVICE_ACCOUNT_JSON:
+        print("✅ Found Google Service Account configuration via GOOGLE_SERVICE_ACCOUNT_JSON environment variable.")
+    elif os.path.exists(GOOGLE_SERVICE_ACCOUNT_FILE):
         print(f"✅ Found Google Service Account file: '{GOOGLE_SERVICE_ACCOUNT_FILE}'")
+    else:
+        print(f"\n⚠️ WARNING: Google Service Account credentials not found (neither GOOGLE_SERVICE_ACCOUNT_JSON nor '{GOOGLE_SERVICE_ACCOUNT_FILE}').")
+        print("Google Sheets integration will be disabled until configured.")
+        print("See instructions in README.md to configure your Google Service Account.\n")
 
     print(f"🚀 Starting Telegram Macros & Calories Logging Bot...")
     print(f"📅 Target Google Sheet: '{GOOGLE_SHEET_NAME}'")
@@ -794,9 +817,24 @@ def main() -> None:
     # Error handler
     app.add_error_handler(error_handler)
 
-    # Start polling
-    print("🤖 Bot is running! Press Ctrl+C to stop.")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    # Start bot (Webhook mode for Cloud Run, Polling mode for Local Development)
+    if WEBHOOK_URL:
+        clean_url = WEBHOOK_URL.rstrip("/")
+        webhook_path = "webhook"
+        full_webhook_url = f"{clean_url}/{webhook_path}"
+        print(f"🌐 Running in Cloud Webhook Mode on port {PORT}...")
+        print(f"🔗 Setting Telegram Webhook to: {full_webhook_url}")
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            url_path=webhook_path,
+            webhook_url=full_webhook_url,
+            secret_token=TELEGRAM_WEBHOOK_SECRET if TELEGRAM_WEBHOOK_SECRET else None,
+            allowed_updates=Update.ALL_TYPES,
+        )
+    else:
+        print("🤖 Running in Long Polling Mode (Local). Press Ctrl+C to stop.")
+        app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":
