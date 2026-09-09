@@ -21,3 +21,5 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
+# Article draft images
+medium_images/
