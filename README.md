@@ -176,13 +176,13 @@ You should see:
 
 ## 💬 Bot Commands & Interactions
 
-| Action                 | Description                                                                                       |
-| ---------------------- | ------------------------------------------------------------------------------------------------- |
-| **Send Photo**         | Sends food photo to Gemini 3.6 Flash Vision. Extracts macros, fiber, score, and logs to sheet.    |
-| **Send Text**          | E.g. _"Chicken breast with sweet potato and black coffee"_. Breaks down items, fiber, and logs.   |
-| `/today` or `/summary` | Shows cumulative calories, protein, carbs, fat, and fiber logged by you today.                    |
-| `/start`               | Displays welcome message and instructions.                                                        |
-| `/help`                | Detailed guide on logging tips and formatting.                                                    |
+| Action                 | Description                                                                                     |
+| ---------------------- | ----------------------------------------------------------------------------------------------- |
+| **Send Photo**         | Sends food photo to Gemini 3.6 Flash Vision. Extracts macros, fiber, score, and logs to sheet.  |
+| **Send Text**          | E.g. _"Chicken breast with sweet potato and black coffee"_. Breaks down items, fiber, and logs. |
+| `/today` or `/summary` | Shows cumulative calories, protein, carbs, fat, and fiber logged by you today.                  |
+| `/start`               | Displays welcome message and instructions.                                                      |
+| `/help`                | Detailed guide on logging tips and formatting.                                                  |
 
 ---
 

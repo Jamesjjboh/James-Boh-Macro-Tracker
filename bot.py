@@ -363,21 +363,34 @@ async def analyze_food_with_gemini(
         temperature=0.2,
     )
 
-    logger.info("Calling Gemini 3.6 Flash for meal analysis...")
-    response = await client.aio.models.generate_content(
-        model="gemini-3.6-flash",
-        contents=contents,
-        config=config,
-    )
+    candidate_models = ["gemini-3.6-flash", "gemini-3-flash-preview"]
+    last_error = None
 
-    # Response is parsed directly into Pydantic model by google-genai
-    if response.parsed and isinstance(response.parsed, MealAnalysisResponse):
-        return response.parsed
-    
-    # Fallback to model_validate_json if parsed is not directly populated
-    if response.text:
-        return MealAnalysisResponse.model_validate_json(response.text)
+    for model_name in candidate_models:
+        try:
+            logger.info(f"Calling {model_name} for meal analysis...")
+            response = await asyncio.wait_for(
+                client.aio.models.generate_content(
+                    model=model_name,
+                    contents=contents,
+                    config=config,
+                ),
+                timeout=30.0,
+            )
+            # Response is parsed directly into Pydantic model by google-genai
+            if response.parsed and isinstance(response.parsed, MealAnalysisResponse):
+                return response.parsed
+            
+            # Fallback to model_validate_json if parsed is not directly populated
+            if response.text:
+                return MealAnalysisResponse.model_validate_json(response.text)
+        except Exception as e:
+            logger.warning(f"Model {model_name} encountered an issue: {e}. Trying fallback...")
+            last_error = e
+            continue
 
+    if last_error:
+        raise last_error
     raise ValueError("Gemini returned an empty or unparseable response.")
 
 
@@ -581,7 +594,7 @@ async def process_and_log_meal(
     # Send typing indicator and status message
     await update.message.chat.send_action(action=ChatAction.TYPING)
     status_msg = await update.message.reply_text(
-        "🔍 <i>Analyzing meal with Gemini 3.6 Flash...</i>",
+        "🔍 <i>Analyzing meal with Gemini AI...</i>",
         parse_mode=ParseMode.HTML,
     )
 

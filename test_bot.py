@@ -101,11 +101,9 @@ class TestMacroTrackerBot(unittest.TestCase):
             "Nutrition Score (/100)",
         ]
         self.assertEqual(SHEET_HEADERS, expected)
-        self.assertEqual(len(SHEET_HEADERS), 10)
         self.assertEqual(len(SHEET_HEADERS), 11)
 
     def test_format_telegram_reply(self):
-        """Verify HTML formatting produces expected structure and escapes special chars."""
         """Verify HTML formatting produces expected structure, includes fiber, and avoids unwanted footers."""
         item1 = FoodItem(
             item_name="Grilled Salmon & Asparagus",
@@ -147,23 +145,18 @@ class TestMacroTrackerBot(unittest.TestCase):
         self.assertNotIn("Built by", msg)
 
     def test_calculate_user_today_totals(self):
-        """Test daily totals aggregation logic filtering by user and date."""
         """Test daily totals aggregation logic filtering by user, date, and summing fiber."""
         service = GoogleSheetsService("dummy.json", "dummy_sheet")
         mock_ws = MagicMock()
         mock_ws.get_all_values.return_value = [
             SHEET_HEADERS,
             # Row 1: Today, user James
-            ["2026-09-07 08:30:00", "@James", "Oatmeal with whey", "Breakfast", "350", "30", "45", "5", "1 cup oats + 1 scoop whey", "88"],
             ["2026-09-07 08:30:00", "@James", "Oatmeal with whey", "Breakfast", "350", "30", "45", "5", "6.0", "1 cup oats + 1 scoop whey", "88"],
             # Row 2: Today, user Partner
-            ["2026-09-07 09:00:00", "@Partner", "Avocado Toast", "Breakfast", "400", "12", "35", "22", "2 slices with half avocado", "65"],
             ["2026-09-07 09:00:00", "@Partner", "Avocado Toast", "Breakfast", "400", "12", "35", "22", "8.0", "2 slices with half avocado", "65"],
             # Row 3: Today, user James
-            ["2026-09-07 12:45:00", "@james", "Chicken Breast Salad", "Lunch", "420", "48", "10", "12", "200g chicken with greens", "95"],
             ["2026-09-07 12:45:00", "@james", "Chicken Breast Salad", "Lunch", "420", "48", "10", "12", "5.5", "200g chicken with greens", "95"],
             # Row 4: Yesterday, user James
-            ["2026-09-06 20:00:00", "@james", "Steak", "Dinner", "600", "50", "0", "40", "Sirloin steak", "80"],
             ["2026-09-06 20:00:00", "@james", "Steak", "Dinner", "600", "50", "0", "40", "0.0", "Sirloin steak", "80"],
         ]
 
@@ -172,7 +165,6 @@ class TestMacroTrackerBot(unittest.TestCase):
         service.worksheet = mock_ws
         totals = asyncio.run(service.get_user_today_totals("@james", "2026-09-07"))
 
-        # James should have 350 + 420 = 770 kcal, 30 + 48 = 78 g protein, 45 + 10 = 55 g carbs, 5 + 12 = 17 g fat, 2 items
         # James should have 350 + 420 = 770 kcal, 30 + 48 = 78 g protein, 45 + 10 = 55 g carbs, 5 + 12 = 17 g fat, 6.0 + 5.5 = 11.5 g fiber, 2 items
         self.assertEqual(totals["calories"], 770.0)
         self.assertEqual(totals["protein"], 78.0)
