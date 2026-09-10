@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.0] - 2026-09-10
+
+### Added
+- **Google Cloud Firestore Migration**: Migrated primary database from single-user Google Sheets to Google Cloud Firestore (Firebase Native mode in Singapore `asia-southeast1`).
+- **Multi-Tenant Privacy & Data Siloing**: Each Telegram user owns an isolated document store (`users/{chat_id}/meals`). No user can view or query another's nutritional logs.
+- **Natural Language Intent Router**: Seamless zero-command routing for food logging, editing, undo, analytics, CSV export, and privacy inquiries.
+- **Visual Nutrition Analytics**: Generates high-res dark-mode 3-panel charts (`matplotlib`) for 7-day and 30-day trends (Calories vs Target, Protein & Fiber, Energy Distribution Donut) with coaching digests via `/analytics`, `/weekly`, `/monthly`.
+- **Smart Meal Editing & Undo**: Natural language corrections (e.g. *"actually no sugar in the tea"*, *"change chicken to 200g"*) and `/edit` & `/undo` commands.
+- **Data Portability (/export)**: Generates and delivers full 11-column `.csv` downloads in Telegram.
+- **Data Governance & Legal Compliance**: Singapore PDPA compliance, transparent `/privacy` notice, and self-service account & data wipe (`/delete`).
+- **Historical Migration Utility**: Added `scripts/migrate_sheets_to_firestore.py` to seamlessly backfill historical Google Sheets entries into Firestore.
+
+---
+
 ## [1.2.0] - 2026-09-10
 
 ### Added
