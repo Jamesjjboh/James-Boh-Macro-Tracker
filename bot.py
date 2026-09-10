@@ -524,6 +524,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "• Track today's cumulative macros for you and your partner!\n\n"
         "⚙️ <b>Commands:</b>\n"
         "/today - View your cumulative macro totals for today\n"
+        "/changelog - View recent product updates & improvements\n"
         "/help - Display usage instructions"
     )
     await update.message.reply_text(welcome_text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
@@ -543,12 +544,34 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "  - <code>Salmon sushi set with miso soup</code>\n\n"
         "• <b>Commands:</b>\n"
         "  /today - View your macro totals logged so far today\n"
+        "  /changelog - View recent product updates & release notes\n"
         "  /start - Show the welcome menu\n"
         "  /help - Show this guide\n\n"
         "💡 <i>Tip: The bot distinguishes entries between you and your partner using your Telegram username!</i>\n"
         "💼 <i>Connect with creator: <a href=\"https://www.linkedin.com/in/jamesboh/\">James Boh on LinkedIn</a></i>"
     )
     await update.message.reply_text(help_text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
+
+async def changelog_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles /changelog and /updates command."""
+    changelog_text = (
+        "🚀 <b>James Boh Macro Tracker — What's New</b>\n"
+        "<i>Full changelog on <a href=\"https://github.com/Jamesjjboh/James-Boh-Macro-Tracker/blob/main/CHANGELOG.md\">GitHub</a></i>\n\n"
+        "<b>v1.2.0 (Latest):</b>\n"
+        "• ☁️ <b>24/7 Cloud Uptime:</b> Deployed to Google Cloud Run in Singapore. Runs 24/7 even when laptops are closed!\n"
+        "• ⚡ <b>Serverless Webhooks:</b> Zero idle cost ($0/mo) with instant sub-second response times.\n"
+        "• 📋 <b>In-Bot Changelog:</b> Type /changelog to see recent product updates.\n\n"
+        "<b>v1.1.0:</b>\n"
+        "• 🥗 <b>Dietary Fiber:</b> Expanded schema to track daily fiber (g) for satiety & gut health.\n"
+        "• 🛡️ <b>503 Resilience:</b> Multi-model fallback chain to prevent API timeout stalls.\n"
+        "• 🎯 <b>Caption Override:</b> Photo captions serve as absolute ground truth for hidden ingredients (e.g. unsweetened soy milk).\n\n"
+        "<b>v1.0.0:</b>\n"
+        "• 📸 Instant photo & text meal recognition powered by Gemini 3.6 Flash.\n"
+        "• 📊 Automated logging to Google Sheets with itemized breakdowns & coach's scoring.\n\n"
+        "💼 <i>Connect: <a href=\"https://www.linkedin.com/in/jamesboh/\">James Boh on LinkedIn</a></i>"
+    )
+    await update.message.reply_text(changelog_text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
 async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -809,6 +832,8 @@ def main() -> None:
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("today", today_command))
     app.add_handler(CommandHandler("summary", today_command))
+    app.add_handler(CommandHandler("changelog", changelog_command))
+    app.add_handler(CommandHandler("updates", changelog_command))
 
     # Message handlers
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
