@@ -186,7 +186,9 @@ class GoogleSheetsService:
         self.credentials_path = credentials_path
         self.sheet_name = sheet_name
         self.credentials_json = credentials_json
+        self.spreadsheet = None
         self.worksheet = None
+        self.subscribers_worksheet = None
         self._lock = asyncio.Lock()
 
     def is_configured(self) -> bool:
@@ -211,6 +213,7 @@ class GoogleSheetsService:
         
         try:
             sh = gc.open(self.sheet_name)
+            self.spreadsheet = sh
         except gspread.SpreadsheetNotFound:
             raise ValueError(
                 f"Google Sheet '{self.sheet_name}' not found. Please create it and share it with your Service Account email."
@@ -254,6 +257,68 @@ class GoogleSheetsService:
         if self.worksheet is None:
             self.worksheet = await asyncio.to_thread(self._get_worksheet_sync)
         return self.worksheet
+
+    def _get_subscribers_worksheet_sync(self) -> gspread.Worksheet:
+        if self.spreadsheet is None:
+            self._get_worksheet_sync()
+        try:
+            return self.spreadsheet.worksheet("Subscribers")
+        except gspread.WorksheetNotFound:
+            logger.info("Creating 'Subscribers' worksheet in Google Sheet...")
+            ws = self.spreadsheet.add_worksheet(title="Subscribers", rows=100, cols=4)
+            ws.update(range_name="A1:D1", values=[["Chat ID", "User Name", "First Active", "Last Active"]])
+            try:
+                ws.format("A1:D1", {
+                    "textFormat": {"bold": True},
+                    "horizontalAlignment": "CENTER",
+                })
+            except Exception as e:
+                logger.warning(f"Could not format Subscribers header row: {e}")
+            return ws
+
+    async def get_subscribers_worksheet(self) -> gspread.Worksheet:
+        if self.subscribers_worksheet is None:
+            self.subscribers_worksheet = await asyncio.to_thread(self._get_subscribers_worksheet_sync)
+        return self.subscribers_worksheet
+
+    async def register_subscriber(self, chat_id: int, user_name: str) -> None:
+        """Saves or updates subscriber chat_id and user_name in Google Sheets."""
+        if not self.is_configured():
+            return
+        async with self._lock:
+            try:
+                ws = await self.get_subscribers_worksheet()
+                rows = await asyncio.to_thread(ws.get_all_values)
+                now_str = datetime.now(LOCAL_TZ).strftime("%Y-%m-%d %H:%M:%S")
+                for i, row in enumerate(rows[1:], start=2):
+                    if len(row) > 0 and str(row[0]).strip() == str(chat_id):
+                        await asyncio.to_thread(ws.update_cell, i, 4, now_str)
+                        return
+                await asyncio.to_thread(
+                    ws.append_row,
+                    [str(chat_id), user_name, now_str, now_str],
+                    value_input_option="USER_ENTERED",
+                )
+                logger.info(f"Registered new subscriber: {user_name} ({chat_id})")
+            except Exception as e:
+                logger.warning(f"Could not register subscriber {chat_id}: {e}")
+
+    async def get_all_subscriber_chat_ids(self) -> List[int]:
+        """Returns list of unique chat_ids of all registered subscribers."""
+        if not self.is_configured():
+            return []
+        async with self._lock:
+            try:
+                ws = await self.get_subscribers_worksheet()
+                rows = await asyncio.to_thread(ws.get_all_values)
+                chat_ids = []
+                for row in rows[1:]:
+                    if row and str(row[0]).strip().lstrip("-").isdigit():
+                        chat_ids.append(int(str(row[0]).strip()))
+                return list(set(chat_ids))
+            except Exception as e:
+                logger.error(f"Error fetching subscribers: {e}")
+                return []
 
     async def append_food_items(self, rows: list) -> None:
         async with self._lock:
@@ -508,6 +573,8 @@ def format_telegram_reply(
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles /start command."""
     user_name = get_user_display_name(update)
+    if update.effective_chat:
+        asyncio.create_task(sheets_service.register_subscriber(update.effective_chat.id, user_name))
     welcome_text = (
         f"🥗 <b>James Boh Macro Tracker</b>\n"
         f"<i>Created by James Boh (<a href=\"https://www.linkedin.com/in/jamesboh/\">LinkedIn</a> | <a href=\"https://github.com/Jamesjjboh/James-Boh-Macro-Tracker\">GitHub</a>)</i>\n\n"
@@ -550,7 +617,118 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "💡 <i>Tip: The bot distinguishes entries between you and your partner using your Telegram username!</i>\n"
         "💼 <i>Connect with creator: <a href=\"https://www.linkedin.com/in/jamesboh/\">James Boh on LinkedIn</a></i>"
     )
+    if is_admin(update):
+        help_text += (
+            "\n\n🛠️ <b>Admin Release Commands:</b>\n"
+            "• <code>/release</code> - Broadcast latest release notes to all users\n"
+            "• <code>/broadcast &lt;msg&gt;</code> - Broadcast a custom announcement"
+        )
     await update.message.reply_text(help_text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
+
+def is_admin(update: Update) -> bool:
+    """Checks whether the sender is an authorized administrator."""
+    user = update.effective_user
+    if not user:
+        return False
+    username = (user.username or "").lower().lstrip("@")
+    if ALLOWED_USERS and username in ALLOWED_USERS:
+        return True
+    return False
+
+
+async def release_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin command to broadcast latest release notes to all registered subscribers."""
+    if not is_admin(update):
+        await update.message.reply_text("⛔ Unauthorized. Only the admin can broadcast release announcements.")
+        return
+
+    subscribers = await sheets_service.get_all_subscriber_chat_ids()
+    current_chat_id = update.effective_chat.id
+    if current_chat_id not in subscribers:
+        subscribers.append(current_chat_id)
+
+    if not subscribers:
+        await update.message.reply_text("⚠️ No registered subscribers found to broadcast to.")
+        return
+
+    release_announcement = (
+        "🚀 <b>James Boh Macro Tracker — New Release!</b>\n"
+        "<i>Version 1.2.0 is now live</i>\n\n"
+        "<b>What's New:</b>\n"
+        "• ☁️ <b>24/7 Cloud Uptime:</b> Runs around the clock on Google Cloud Run.\n"
+        "• ⚡ <b>Instant Responses:</b> Serverless webhooks with zero downtime.\n"
+        "• 📋 <b>Changelog:</b> Type /changelog anytime to view all updates.\n\n"
+        "<i>Happy tracking! Snap your next meal photo to try it out.</i>"
+    )
+
+    status_msg = await update.message.reply_text(f"📢 Broadcasting release to {len(subscribers)} subscriber(s)...")
+    sent = 0
+    for cid in subscribers:
+        try:
+            await context.bot.send_message(
+                chat_id=cid,
+                text=release_announcement,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+            sent += 1
+        except Exception as e:
+            logger.warning(f"Could not send release broadcast to {cid}: {e}")
+
+    await status_msg.edit_text(
+        f"✅ <b>Release Broadcast Complete!</b>\nDelivered to {sent}/{len(subscribers)} subscriber(s).",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin command to broadcast a custom message to all subscribers: /broadcast <message>"""
+    if not is_admin(update):
+        await update.message.reply_text("⛔ Unauthorized. Only the admin can broadcast messages.")
+        return
+
+    raw_text = update.message.text or ""
+    _, _, message_to_send = raw_text.partition(" ")
+    message_to_send = message_to_send.strip()
+
+    if not message_to_send:
+        await update.message.reply_text(
+            "ℹ️ <b>Usage:</b> <code>/broadcast &lt;your message&gt;</code>\n\n"
+            "<i>Example:</i> <code>/broadcast Hey team, we just added fiber tracking!</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    subscribers = await sheets_service.get_all_subscriber_chat_ids()
+    current_chat_id = update.effective_chat.id
+    if current_chat_id not in subscribers:
+        subscribers.append(current_chat_id)
+
+    formatted_broadcast = (
+        "📢 <b>Announcement from James</b>\n\n"
+        f"{html.escape(message_to_send)}\n\n"
+        "<i>— James Boh Macro Tracker</i>"
+    )
+
+    status_msg = await update.message.reply_text(f"📢 Broadcasting message to {len(subscribers)} subscriber(s)...")
+    sent = 0
+    for cid in subscribers:
+        try:
+            await context.bot.send_message(
+                chat_id=cid,
+                text=formatted_broadcast,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+            sent += 1
+        except Exception as e:
+            logger.warning(f"Could not send broadcast to {cid}: {e}")
+
+    await status_msg.edit_text(
+        f"✅ <b>Broadcast Complete!</b>\nDelivered to {sent}/{len(subscribers)} subscriber(s).",
+        parse_mode=ParseMode.HTML,
+    )
 
 
 async def changelog_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -581,6 +759,8 @@ async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     user_name = get_user_display_name(update)
+    if update.effective_chat:
+        asyncio.create_task(sheets_service.register_subscriber(update.effective_chat.id, user_name))
     now = datetime.now(LOCAL_TZ)
     today_prefix = now.strftime("%Y-%m-%d")
 
@@ -631,6 +811,8 @@ async def process_and_log_meal(
         return
 
     user_name = get_user_display_name(update)
+    if update.effective_chat:
+        asyncio.create_task(sheets_service.register_subscriber(update.effective_chat.id, user_name))
     now = datetime.now(LOCAL_TZ)
     date_time_str = now.strftime("%Y-%m-%d %H:%M:%S")
     today_prefix = now.strftime("%Y-%m-%d")
@@ -834,6 +1016,8 @@ def main() -> None:
     app.add_handler(CommandHandler("summary", today_command))
     app.add_handler(CommandHandler("changelog", changelog_command))
     app.add_handler(CommandHandler("updates", changelog_command))
+    app.add_handler(CommandHandler("release", release_command))
+    app.add_handler(CommandHandler("broadcast", broadcast_command))
 
     # Message handlers
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
