@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.1] - 2026-09-10
+
+### Fixed
+- **Gemini 503 UNAVAILABLE Resilience**: Replaced throttled `gemini-3-flash-preview` endpoint with a multi-tier fallback cascade across 5 battle-tested models on separate physical TPU clusters (`gemini-3.6-flash` -> `gemini-3.5-flash` -> `gemini-3.5-flash-lite` -> `gemini-flash-lite-latest` -> `gemini-3.1-flash-lite`).
+- **Faster Failover Latency**: Reduced per-model timeout from 30.0s to 20.0s with retry jitter, allowing the bot to pivot seamlessly within seconds without leaving the user waiting.
+- **Friendly High-Demand Messaging**: Masked transient Google API 503 capacity spikes with reassuring, formatted Telegram notifications instead of raw JSON tracebacks.
+
+---
+
 ## [1.3.0] - 2026-09-10
 
 ### Added

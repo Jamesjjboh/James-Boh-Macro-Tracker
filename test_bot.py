@@ -18,6 +18,7 @@ from bot import (
     SHEET_HEADERS,
     format_telegram_reply,
     classify_text_intent,
+    GEMINI_CANDIDATE_MODELS,
 )
 
 
@@ -329,6 +330,13 @@ class TestMacroTrackerBot(unittest.TestCase):
             self.assertEqual(after_totals["item_count"], 0)
 
         asyncio.run(run_lifecycle())
+
+    def test_gemini_candidate_models_configuration(self):
+        """Verify fallback cascade has at least 3 models and excludes throttled preview."""
+        self.assertGreaterEqual(len(GEMINI_CANDIDATE_MODELS), 3)
+        self.assertIn("gemini-3.6-flash", GEMINI_CANDIDATE_MODELS)
+        self.assertIn("gemini-3.5-flash", GEMINI_CANDIDATE_MODELS)
+        self.assertNotIn("gemini-3-flash-preview", GEMINI_CANDIDATE_MODELS)
 
 
 if __name__ == "__main__":

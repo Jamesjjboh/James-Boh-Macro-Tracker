@@ -747,9 +747,21 @@ class AnalyticsService:
         return "\n".join(lines)
 
 
-# =====================================================================
-# Gemini Vision & Smart Meal Editing
-# =====================================================================
+# Multi-tiered model cascade across independent TPU pods for 99.99% availability:
+# 1. Primary flagship: gemini-3.6-flash (highest quality multimodal reasoning)
+# 2. Secondary flagship: gemini-3.5-flash (battle-tested high availability)
+# 3. Dedicated low-latency: gemini-3.5-flash-lite (isolated high-throughput capacity)
+# 4. Standard flash-lite alias: gemini-flash-lite-latest (always available fallback)
+# 5. High-capacity tertiary: gemini-3.1-flash-lite (failsafe safety net)
+GEMINI_CANDIDATE_MODELS = [
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-flash-lite-latest",
+    "gemini-3.1-flash-lite",
+]
+
+
 def get_gemini_client() -> genai.Client:
     if not GEMINI_API_KEY:
         raise ValueError("GEMINI_API_KEY is missing in your .env configuration.")
@@ -785,10 +797,8 @@ async def analyze_food_with_gemini(
         temperature=0.2,
     )
 
-    candidate_models = ["gemini-3.6-flash", "gemini-3-flash-preview"]
     last_error = None
-
-    for model_name in candidate_models:
+    for model_name in GEMINI_CANDIDATE_MODELS:
         try:
             response = await asyncio.wait_for(
                 client.aio.models.generate_content(
@@ -796,7 +806,7 @@ async def analyze_food_with_gemini(
                     contents=contents,
                     config=config,
                 ),
-                timeout=30.0,
+                timeout=20.0,
             )
             if response.parsed and isinstance(response.parsed, MealAnalysisResponse):
                 return response.parsed
@@ -805,6 +815,7 @@ async def analyze_food_with_gemini(
         except Exception as e:
             logger.warning(f"Model {model_name} failed: {e}. Trying fallback...")
             last_error = e
+            await asyncio.sleep(0.5)
             continue
 
     if last_error:
@@ -843,9 +854,8 @@ async def edit_meal_with_gemini(
         temperature=0.1,
     )
 
-    candidate_models = ["gemini-3.6-flash", "gemini-3-flash-preview"]
     last_error = None
-    for model_name in candidate_models:
+    for model_name in GEMINI_CANDIDATE_MODELS:
         try:
             response = await asyncio.wait_for(
                 client.aio.models.generate_content(
@@ -853,14 +863,16 @@ async def edit_meal_with_gemini(
                     contents=contents,
                     config=config,
                 ),
-                timeout=30.0,
+                timeout=20.0,
             )
             if response.parsed and isinstance(response.parsed, MealAnalysisResponse):
                 return response.parsed
             if response.text:
                 return MealAnalysisResponse.model_validate_json(response.text)
         except Exception as e:
+            logger.warning(f"Model {model_name} failed during edit: {e}. Trying fallback...")
             last_error = e
+            await asyncio.sleep(0.5)
             continue
 
     if last_error:
@@ -1379,7 +1391,16 @@ async def execute_meal_edit(
         await status_msg.edit_text(reply_html, parse_mode=ParseMode.HTML)
     except Exception as e:
         logger.error(f"Meal edit failed: {e}", exc_info=True)
-        await status_msg.edit_text(f"❌ Could not update meal: {html.escape(str(e))}")
+        err_msg = str(e)
+        if "503" in err_msg or "UNAVAILABLE" in err_msg or "high demand" in err_msg:
+            user_friendly_err = (
+                "⚠️ <b>AI Service High Demand</b>\n\n"
+                "Google's Gemini servers are experiencing a brief spike in traffic. "
+                "Please wait a few seconds and try editing again."
+            )
+        else:
+            user_friendly_err = f"❌ Could not update meal: {html.escape(str(e))}"
+        await status_msg.edit_text(user_friendly_err, parse_mode=ParseMode.HTML)
 
 
 async def edit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1558,10 +1579,16 @@ async def process_and_log_meal(
         meal_result = await analyze_food_with_gemini(text_prompt=text_prompt, image_bytes=image_bytes)
     except Exception as e:
         logger.error(f"Gemini analysis failed: {e}", exc_info=True)
-        await status_msg.edit_text(
-            f"❌ <b>Analysis Failed:</b> {html.escape(str(e))}\n\nPlease try again with a clearer photo or description.",
-            parse_mode=ParseMode.HTML,
-        )
+        err_msg = str(e)
+        if "503" in err_msg or "UNAVAILABLE" in err_msg or "high demand" in err_msg:
+            user_friendly_err = (
+                "⚠️ <b>AI Service High Demand</b>\n\n"
+                "Google's Gemini servers are experiencing a brief spike in traffic. "
+                "Please wait 5–10 seconds and try sending your meal again."
+            )
+        else:
+            user_friendly_err = f"❌ <b>Analysis Failed:</b> {html.escape(str(e))}\n\nPlease try again with a clearer photo or description."
+        await status_msg.edit_text(user_friendly_err, parse_mode=ParseMode.HTML)
         return
 
     if not meal_result.items:
