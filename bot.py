@@ -43,6 +43,7 @@ from telegram import (
     Update,
 )
 from telegram.constants import ChatAction, ParseMode
+from telegram.request import HTTPXRequest
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -1388,7 +1389,11 @@ async def execute_meal_edit(
             sheet_saved=True,
         )
         reply_html = f"✏️ <b>Meal Updated Successfully!</b>\n\n" + reply_html
-        await status_msg.edit_text(reply_html, parse_mode=ParseMode.HTML)
+        try:
+            await status_msg.edit_text(reply_html, parse_mode=ParseMode.HTML)
+        except Exception as e:
+            logger.warning(f"Could not edit status message ({e}), sending new reply message instead.")
+            await update.message.reply_text(reply_html, parse_mode=ParseMode.HTML)
     except Exception as e:
         logger.error(f"Meal edit failed: {e}", exc_info=True)
         err_msg = str(e)
@@ -1658,7 +1663,11 @@ async def process_and_log_meal(
         motivational_note=meal_result.motivational_note,
         sheet_saved=True,
     )
-    await status_msg.edit_text(reply_html, parse_mode=ParseMode.HTML)
+    try:
+        await status_msg.edit_text(reply_html, parse_mode=ParseMode.HTML)
+    except Exception as e:
+        logger.warning(f"Could not edit status message ({e}), sending new reply message instead.")
+        await update.message.reply_text(reply_html, parse_mode=ParseMode.HTML)
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1761,7 +1770,14 @@ def main() -> None:
     print(f"🌐 Configured Timezone: {TIMEZONE_STR}")
     print(f"🔒 Admin User(s): {ADMIN_USERS}")
 
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    tg_request = HTTPXRequest(
+        connection_pool_size=16,
+        connect_timeout=20.0,
+        read_timeout=30.0,
+        write_timeout=20.0,
+        pool_timeout=10.0,
+    )
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).request(tg_request).build()
 
     # Core Navigation & Information Commands
     app.add_handler(CommandHandler("start", start_command))

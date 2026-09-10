@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.2] - 2026-09-10
+
+### Fixed
+- **Telegram Connection Resilience**: Configured explicit 20.0s `connect_timeout` and 30.0s `read_timeout` on `HTTPXRequest` to prevent outbound Telegram socket timeouts during container cold-starts.
+- **Graceful Message Delivery Fallback**: Added auto-fallback from `edit_message_text` to `reply_text` if the original status message cannot be edited due to transient Telegram network glitches.
+
+---
+
 ## [1.3.1] - 2026-09-10
 
 ### Fixed
