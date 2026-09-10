@@ -818,12 +818,15 @@ def main() -> None:
     app.add_error_handler(error_handler)
 
     # Start bot (Webhook mode for Cloud Run, Polling mode for Local Development)
-    if WEBHOOK_URL:
-        clean_url = WEBHOOK_URL.rstrip("/")
+    is_cloud_run = bool(os.getenv("K_SERVICE") or WEBHOOK_URL)
+    if is_cloud_run:
         webhook_path = "webhook"
-        full_webhook_url = f"{clean_url}/{webhook_path}"
+        full_webhook_url = f"{WEBHOOK_URL.rstrip('/')}/{webhook_path}" if WEBHOOK_URL else None
         print(f"🌐 Running in Cloud Webhook Mode on port {PORT}...")
-        print(f"🔗 Setting Telegram Webhook to: {full_webhook_url}")
+        if full_webhook_url:
+            print(f"🔗 Setting Telegram Webhook to: {full_webhook_url}")
+        else:
+            print("⏳ HTTP server listening on port 8080. Waiting for WEBHOOK_URL configuration.")
         app.run_webhook(
             listen="0.0.0.0",
             port=PORT,
