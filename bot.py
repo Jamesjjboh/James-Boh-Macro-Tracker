@@ -1622,8 +1622,9 @@ async def process_and_log_meal(
         "items": [i.model_dump() for i in meal_result.items],
     }
 
+    saved_meal_id = None
     try:
-        await firestore_service.save_meal(chat_id, user_name, meal_doc)
+        saved_meal_id = await firestore_service.save_meal(chat_id, user_name, meal_doc)
         today_totals = await firestore_service.get_user_today_totals(chat_id, today_prefix)
     except Exception as e:
         logger.error(f"Firestore save error: {e}", exc_info=True)
@@ -1667,7 +1668,13 @@ async def process_and_log_meal(
         await status_msg.edit_text(reply_html, parse_mode=ParseMode.HTML)
     except Exception as e:
         logger.warning(f"Could not edit status message ({e}), sending new reply message instead.")
-        await update.message.reply_text(reply_html, parse_mode=ParseMode.HTML)
+        try:
+            await update.message.reply_text(reply_html, parse_mode=ParseMode.HTML)
+        except Exception as err2:
+            logger.error(f"Failed to deliver meal confirmation to user: {err2}. Rolling back meal {saved_meal_id}.")
+            if saved_meal_id:
+                await firestore_service.delete_meal(chat_id, saved_meal_id)
+            raise err2
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
