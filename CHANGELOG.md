@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.3] - 2026-09-11
+
+### Added
+- **Streamlined Onboarding Experience**: Replaced lengthy technical `/start` manual with a minimalist, welcoming 3-line message focused on immediate action.
+- **Natural Language Daily Totals**: Added conversational intent routing for daily summaries (e.g. *"what are my calories today?"*, *"today summary"*, *"today"*).
+
+### Fixed
+- **Atomic Delivery Rollback**: Automatically rolls back Firestore meal creation if confirmation message delivery to Telegram fails completely, preventing ghost meal entries.
+
+---
+
 ## [1.3.2] - 2026-09-10
 
 ### Fixed

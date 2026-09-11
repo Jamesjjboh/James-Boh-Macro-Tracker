@@ -888,6 +888,16 @@ def classify_text_intent(text: str) -> str:
     """Classifies incoming text messages to route actions naturally without slash commands."""
     t = text.strip().lower()
 
+    # 0. Today's Totals Check
+    today_phrases = [
+        "today", "today totals", "today's totals", "my calories today",
+        "how many calories today", "show today", "today summary", "today's summary",
+        "what are my calories today", "what did i eat today", "what's my intake today",
+        "summary today", "my macros today", "how much did i eat today", "today's macros"
+    ]
+    if t in today_phrases or any(k in t for k in ["calories today", "macros today", "total calories today", "summary today"]):
+        return "today"
+
     # 1. Undo
     if t in ["undo", "undo that", "delete last meal", "delete my last meal", "cancel last meal", "remove last meal", "undo last"]:
         return "undo"
@@ -1021,7 +1031,7 @@ def format_telegram_reply(
 # Telegram Command Handlers
 # =====================================================================
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles /start command: Onboarding, privacy notice & medical disclaimer."""
+    """Handles /start command: Clean, welcoming onboarding."""
     user_name = get_user_display_name(update)
     chat_id = update.effective_chat.id
     first_name = update.effective_user.first_name or "" if update.effective_user else ""
@@ -1029,22 +1039,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await firestore_service.register_or_update_user(chat_id, user_name, first_name)
 
     welcome_text = (
-        f"🥗 <b>James Boh Macro Tracker</b>\n"
-        f"<i>Created by James Boh (<a href=\"https://www.linkedin.com/in/jamesboh/\">LinkedIn</a> | <a href=\"https://github.com/Jamesjjboh/James-Boh-Macro-Tracker\">GitHub</a>)</i>\n\n"
-        f"👋 <b>Welcome, {html.escape(user_name)}!</b>\n\n"
-        "I'm your private <b>Macros & Calories Logging Assistant</b>, powered by Gemini 3.6 Flash Vision & Google Cloud Firestore.\n\n"
-        "✨ <b>How to Log Food:</b>\n"
-        "1. 📸 <b>Send a Photo:</b> Snap your meal or drink. Add a caption for hidden ingredients!\n"
-        "2. ✍️ <b>Type Naturally:</b> Just type what you ate (e.g. <i>'Chicken rice with teh o kosong'</i> or <i>'2 boiled eggs with toast'</i>).\n"
-        "3. ✏️ <b>Edit Anytime:</b> Made a mistake? Reply with <i>'Actually no sugar'</i> or type /edit.\n"
-        "4. 📊 <b>View Trends:</b> Ask <i>'How did I do this week?'</i> or type /analytics.\n\n"
-        "⚙️ <b>Useful Shortcuts:</b>\n"
-        "/today - View today's cumulative totals\n"
-        "/analytics - View 7-day visual charts & coaching report\n"
-        "/export - Download your entire food history as a CSV file\n"
-        "/privacy - View privacy policy & Singapore data residency info\n"
-        "/help - View full guide\n\n"
-        "⚠️ <i>Disclaimer: Calorie & nutrient estimates are AI approximations for general wellness and informational purposes only, not medical advice.</i>"
+        "👋 <b>Welcome to your Macro Tracker!</b>\n\n"
+        "Just send me a photo of your meal or type what you ate "
+        "(e.g. <i>\"2 boiled eggs with black coffee\"</i>), and I'll track your calories and macros. 🥗\n\n"
+        "📸 <i>Snap a photo or type below to log your first meal!</i>"
     )
     await update.message.reply_text(welcome_text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
@@ -1087,7 +1085,11 @@ async def changelog_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     """Handles /changelog command."""
     changelog_text = (
         "📋 <b>Product Changelog — James Boh Macro Tracker</b>\n\n"
-        "<b>v1.3.0 (Current):</b>\n"
+        "<b>v1.3.3 (Current):</b>\n"
+        "• ✨ <b>Clean Onboarding:</b> Ultra-simple, friendly welcome message (/start).\n"
+        "• 💬 <b>Natural Daily Totals:</b> Ask naturally (e.g. <i>'what are my calories today?'</i>) without slash commands.\n"
+        "• 🛡️ <b>Atomic Rollback:</b> Guarantees no phantom entries if message delivery fails.\n\n"
+        "<b>v1.3.0:</b>\n"
         "• 🔒 <b>Cloud Firestore Migration:</b> Multi-tenant database with strict private data isolation.\n"
         "• 📊 <b>Visual Analytics:</b> Dark-mode chart cards & weekly trends (/analytics, /weekly, /monthly).\n"
         "• ✏️ <b>Smart Meal Editing:</b> Correct entries naturally (e.g. <i>'actually no sugar'</i>) or with /edit & /undo.\n"
@@ -1726,7 +1728,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     # Classify intent via Natural Language Router
     intent = classify_text_intent(text)
 
-    if intent == "undo":
+    if intent == "today":
+        await today_command(update, context)
+    elif intent == "undo":
         await undo_command(update, context)
     elif intent == "export":
         await export_command(update, context)
