@@ -19,7 +19,8 @@ import json
 import logging
 import os
 import sys
-from typing import List, Optional, Tuple
+import time
+from typing import Dict, List, Optional, Tuple
 
 import matplotlib
 matplotlib.use("Agg")
@@ -204,6 +205,24 @@ Your task:
 
 
 # =====================================================================
+# Multi-Photo Album (Media Group) Collector State
+# =====================================================================
+class MediaGroupBuffer:
+    """Buffers multiple photos sent concurrently in a single Telegram album."""
+    def __init__(self, media_group_id: str, initial_update: Update):
+        self.media_group_id = media_group_id
+        self.initial_update = initial_update
+        self.caption: str = ""
+        self.images: List[bytes] = []
+        self.lock = asyncio.Lock()
+        self.last_received_time = time.monotonic()
+
+
+_MEDIA_GROUP_BUFFERS: Dict[str, MediaGroupBuffer] = {}
+_MEDIA_GROUP_GLOBAL_LOCK = asyncio.Lock()
+
+
+# =====================================================================
 # Google Cloud Firestore Integration (Primary Multi-Tenant Database)
 # =====================================================================
 class FirestoreService:
@@ -235,15 +254,15 @@ class FirestoreService:
         return None
 
     async def get_client(self) -> firestore.AsyncClient:
-        if self._client is None:
-            async with self._lock:
-                if self._client is None:
-                    creds = self._get_credentials()
-                    self._client = firestore.AsyncClient(
-                        project=self.project_id,
-                        credentials=creds,
-                        database=self.database,
-                    )
+        loop = asyncio.get_running_loop()
+        if self._client is None or getattr(self, "_client_loop", None) is not loop:
+            creds = self._get_credentials()
+            self._client = firestore.AsyncClient(
+                project=self.project_id,
+                credentials=creds,
+                database=self.database,
+            )
+            self._client_loop = loop
         return self._client
 
     async def register_or_update_user(
@@ -295,7 +314,42 @@ class FirestoreService:
             "daily_protein_target": 150,
             "daily_fiber_target": 25,
             "timezone": TIMEZONE_STR,
+            "targets_set": False,
         }
+
+    async def update_user_targets(
+        self,
+        chat_id: int,
+        calorie_target: Optional[float] = None,
+        protein_target: Optional[float] = None,
+        fiber_target: Optional[float] = None,
+    ) -> dict:
+        """Updates user daily calorie, protein, and fiber targets and flags them as custom set."""
+        db = await self.get_client()
+        user_ref = db.collection("users").document(str(chat_id))
+        doc = await user_ref.get()
+        current = doc.to_dict() if doc.exists else {}
+
+        updates = {"targets_set": True}
+        if calorie_target is not None:
+            updates["daily_calorie_target"] = round(float(calorie_target), 0)
+        if protein_target is not None:
+            updates["daily_protein_target"] = round(float(protein_target), 1)
+        if fiber_target is not None:
+            updates["daily_fiber_target"] = round(float(fiber_target), 1)
+
+        if doc.exists:
+            await user_ref.update(updates)
+        else:
+            updates.update({
+                "chat_id": chat_id,
+                "created_at": datetime.now(LOCAL_TZ).isoformat(),
+                "timezone": TIMEZONE_STR,
+            })
+            await user_ref.set(updates)
+
+        current.update(updates)
+        return current
 
     async def save_meal(self, chat_id: int, user_name: str, meal_data: dict) -> str:
         """Saves a meal document under users/{chat_id}/meals."""
@@ -318,6 +372,28 @@ class FirestoreService:
             data = docs[0].to_dict()
             data["id"] = docs[0].id
             return data
+        return None
+
+    async def find_meal_by_message_id(self, chat_id: int, message_id: int) -> Optional[dict]:
+        """Finds a meal document by either its bot confirmation message_id or original user message_id."""
+        try:
+            db = await self.get_client()
+            meals_ref = db.collection("users").document(str(chat_id)).collection("meals")
+            q1 = meals_ref.where(filter=FieldFilter("bot_message_id", "==", message_id)).limit(1)
+            docs = [d async for d in q1.stream()]
+            if docs:
+                data = docs[0].to_dict()
+                data["id"] = docs[0].id
+                return data
+
+            q2 = meals_ref.where(filter=FieldFilter("user_message_id", "==", message_id)).limit(1)
+            docs = [d async for d in q2.stream()]
+            if docs:
+                data = docs[0].to_dict()
+                data["id"] = docs[0].id
+                return data
+        except Exception as e:
+            logger.warning(f"Error finding meal by message_id {message_id}: {e}")
         return None
 
     async def update_meal(self, chat_id: int, meal_id: str, updated_data: dict) -> None:
@@ -488,6 +564,227 @@ class FirestoreService:
             logger.error(f"Error fetching subscribers from Firestore: {e}")
             return []
 
+    async def save_feedback(
+        self,
+        chat_id: int,
+        user_name: str,
+        feedback_text: str,
+        category: str = "general",
+    ) -> str:
+        """Stores user feedback in the root feedback collection."""
+        db = await self.get_client()
+        feedback_ref = db.collection("feedback").document()
+        now_iso = datetime.now(LOCAL_TZ).isoformat()
+
+        doc_data = {
+            "feedback_id": feedback_ref.id,
+            "chat_id": chat_id,
+            "user_name": user_name,
+            "feedback_text": feedback_text.strip(),
+            "category": category,
+            "status": "new",
+            "created_at": now_iso,
+        }
+        await feedback_ref.set(doc_data)
+        logger.info(f"Saved user feedback from {user_name} ({chat_id}): {feedback_ref.id}")
+        return feedback_ref.id
+
+    async def get_recent_feedback(self, limit: int = 10) -> List[dict]:
+        """Retrieves recent user feedback submissions."""
+        try:
+            db = await self.get_client()
+            query = db.collection("feedback").order_by("created_at", direction=firestore.Query.DESCENDING).limit(limit)
+            feedbacks = []
+            async for doc in query.stream():
+                data = doc.to_dict()
+                data["id"] = doc.id
+                feedbacks.append(data)
+            return feedbacks
+        except Exception as e:
+            logger.error(f"Error retrieving feedback from Firestore: {e}")
+            return []
+
+    async def get_admin_chat_ids(self) -> List[int]:
+        """Returns chat IDs corresponding to authorized admin users."""
+        admin_cids = set()
+        admin_cids.add(102325434)  # Default fallback for James Boh
+        try:
+            db = await self.get_client()
+            async for doc in db.collection("users").stream():
+                d = doc.to_dict()
+                uname = (d.get("user_name") or "").lstrip("@").lower()
+                cid = d.get("chat_id")
+                if (uname in ADMIN_USERS or str(cid) in ADMIN_USERS) and cid:
+                    try:
+                        admin_cids.add(int(cid))
+                    except ValueError:
+                        pass
+        except Exception as e:
+            logger.error(f"Error finding admin chat IDs: {e}")
+        return list(admin_cids)
+
+    async def touch_user_activity(
+        self,
+        chat_id: int,
+        user_name: str,
+        first_name: str = "",
+    ) -> None:
+        """Lightweight non-blocking update of last_active_at and user handle."""
+        try:
+            db = await self.get_client()
+            user_ref = db.collection("users").document(str(chat_id))
+            doc = await user_ref.get()
+            now_iso = datetime.now(LOCAL_TZ).isoformat()
+            if doc.exists:
+                update_data = {
+                    "last_active_at": now_iso,
+                    "user_name": user_name,
+                }
+                if first_name:
+                    update_data["first_name"] = first_name
+                await user_ref.update(update_data)
+            else:
+                await user_ref.set({
+                    "chat_id": chat_id,
+                    "user_name": user_name,
+                    "first_name": first_name,
+                    "created_at": now_iso,
+                    "last_active_at": now_iso,
+                    "daily_calorie_target": 2000,
+                    "daily_protein_target": 150,
+                    "daily_fiber_target": 25,
+                    "timezone": TIMEZONE_STR,
+                })
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            if "Event loop is closed" not in str(e):
+                logger.warning(f"Could not touch user activity for {chat_id}: {e}")
+
+    async def get_platform_metrics(self) -> dict:
+        """Computes platform-wide growth, active users, log volume, and engagement metrics."""
+        db = await self.get_client()
+        now = datetime.now(LOCAL_TZ)
+        today_str = now.strftime("%Y-%m-%d")
+        seven_days_ago_dt = now - timedelta(days=7)
+        seven_days_ago_str = seven_days_ago_dt.strftime("%Y-%m-%d")
+        thirty_days_ago_dt = now - timedelta(days=30)
+        twenty_four_hours_ago_dt = now - timedelta(hours=24)
+
+        users = []
+        async for doc in db.collection("users").stream():
+            data = doc.to_dict()
+            data["id"] = doc.id
+            users.append(data)
+
+        total_users = len(users)
+        total_meals = 0
+        total_items = 0
+        meals_today = 0
+        meals_7d = 0
+        dau_users = set()
+        wau_users = set()
+        mau_users = set()
+        activated_users = 0
+        new_users_today = 0
+        new_users_7d = 0
+        user_breakdown = []
+
+        for u in users:
+            cid = u.get("chat_id") or u["id"]
+            uname = u.get("user_name") or f"User_{cid}"
+            created_at_str = u.get("created_at")
+            last_active_str = u.get("last_active_at")
+
+            # Signups
+            if created_at_str:
+                try:
+                    c_dt = datetime.fromisoformat(created_at_str)
+                    if c_dt.tzinfo is None:
+                        c_dt = LOCAL_TZ.localize(c_dt)
+                    if c_dt.date() == now.date():
+                        new_users_today += 1
+                    if c_dt >= seven_days_ago_dt:
+                        new_users_7d += 1
+                except Exception:
+                    pass
+
+            # Activity & Recency
+            if last_active_str:
+                try:
+                    la_dt = datetime.fromisoformat(last_active_str)
+                    if la_dt.tzinfo is None:
+                        la_dt = LOCAL_TZ.localize(la_dt)
+                    if la_dt >= twenty_four_hours_ago_dt or la_dt.date() == now.date():
+                        dau_users.add(cid)
+                    if la_dt >= seven_days_ago_dt:
+                        wau_users.add(cid)
+                    if la_dt >= thirty_days_ago_dt:
+                        mau_users.add(cid)
+                except Exception:
+                    pass
+
+            # Meals
+            meals_ref = db.collection("users").document(str(cid)).collection("meals")
+            u_meal_count = 0
+            async for mdoc in meals_ref.stream():
+                mdata = mdoc.to_dict()
+                total_meals += 1
+                u_meal_count += 1
+                items = mdata.get("items") or []
+                total_items += len(items)
+
+                m_date = mdata.get("date") or (mdata.get("timestamp", "")[:10])
+                if m_date == today_str:
+                    meals_today += 1
+                if m_date >= seven_days_ago_str:
+                    meals_7d += 1
+
+            if u_meal_count > 0:
+                activated_users += 1
+
+            user_breakdown.append({
+                "chat_id": cid,
+                "user_name": uname,
+                "meals_count": u_meal_count,
+                "last_active": last_active_str or "Never",
+            })
+
+        feedback_count = 0
+        try:
+            async for _ in db.collection("feedback").stream():
+                feedback_count += 1
+        except Exception:
+            pass
+
+        user_breakdown.sort(key=lambda x: x["meals_count"], reverse=True)
+
+        activation_rate = round((activated_users / total_users * 100), 1) if total_users else 0.0
+        stickiness = round((len(dau_users) / len(mau_users) * 100), 1) if mau_users else 0.0
+        avg_meals_per_active = round(total_meals / activated_users, 1) if activated_users else 0.0
+
+        return {
+            "total_users": total_users,
+            "activated_users": activated_users,
+            "activation_rate": activation_rate,
+            "new_users_today": new_users_today,
+            "new_users_7d": new_users_7d,
+            "dau": len(dau_users),
+            "wau": len(wau_users),
+            "mau": len(mau_users),
+            "stickiness": stickiness,
+            "total_meals": total_meals,
+            "total_items": total_items,
+            "meals_today": meals_today,
+            "meals_7d": meals_7d,
+            "avg_meals_per_active": avg_meals_per_active,
+            "feedback_count": feedback_count,
+            "user_breakdown": user_breakdown,
+            "generated_at": now.strftime("%d %b %Y, %H:%M SGT"),
+        }
+
+
+
 
 # Global Firestore Service
 firestore_service = FirestoreService(
@@ -571,6 +868,7 @@ class AnalyticsService:
         protein_target: float = 150,
         fiber_target: float = 25,
         days_window: int = 7,
+        targets_set: bool = False,
     ) -> bytes:
         """Generates a high-resolution dark-mode 3-panel PNG chart using matplotlib."""
         today = datetime.now(LOCAL_TZ).date()
@@ -608,15 +906,16 @@ class AnalyticsService:
             for c in cals
         ]
         ax1.bar(range(len(date_labels)), cals, color=bar_colors, width=0.55, zorder=3)
+        cal_label = f"Target: {int(calorie_target)} kcal" if targets_set else f"Baseline: {int(calorie_target)} kcal"
         ax1.axhline(
             calorie_target,
             color=RED_ACCENT,
             linestyle="--",
             linewidth=1.5,
             zorder=4,
-            label=f"Target: {int(calorie_target)} kcal",
+            label=cal_label,
         )
-        ax1.set_title("Daily Calories vs Target", color=TEXT_PRIMARY, fontsize=12, fontweight="bold", pad=10)
+        ax1.set_title("Daily Calories vs Target" if targets_set else "Daily Calories (Baseline: 2,000)", color=TEXT_PRIMARY, fontsize=12, fontweight="bold", pad=10)
         ax1.set_xticks(range(len(date_labels)))
         ax1.set_xticklabels(date_labels, color=TEXT_MUTED, fontsize=8)
         ax1.tick_params(colors=TEXT_MUTED)
@@ -640,14 +939,16 @@ class AnalyticsService:
                 macro_sizes,
                 labels=macro_labels,
                 autopct="%1.0f%%",
+                pctdistance=0.76,
                 startangle=140,
                 colors=macro_colors,
-                wedgeprops=dict(width=0.45, edgecolor=BG_COLOR, linewidth=2),
+                wedgeprops=dict(width=0.42, edgecolor=BG_COLOR, linewidth=2),
                 textprops=dict(color=TEXT_PRIMARY, fontsize=9, fontweight="bold"),
             )
             for at in autotexts:
-                at.set_color(BG_COLOR)
-                at.set_fontsize(8)
+                at.set_color("#0f172a")
+                at.set_fontsize(9)
+                at.set_fontweight("bold")
             ax2.set_title("Energy Breakdown", color=TEXT_PRIMARY, fontsize=12, fontweight="bold", pad=10)
         else:
             ax2.text(0.5, 0.5, "No meals logged\nin period", ha="center", va="center", color=TEXT_MUTED, fontsize=10)
@@ -659,8 +960,10 @@ class AnalyticsService:
         ax3.set_facecolor(CARD_COLOR)
         x = range(len(date_labels))
         width = 0.35
-        ax3.bar([i - width/2 for i in x], proteins, width=width, color=CYAN_ACCENT, label=f"Protein (Target: {int(protein_target)}g)", zorder=3)
-        ax3.bar([i + width/2 for i in x], fibers, width=width, color=PURPLE_ACCENT, label=f"Fiber (Target: {int(fiber_target)}g)", zorder=3)
+        pro_lbl = f"Protein (Target: {int(protein_target)}g)" if targets_set else f"Protein (Baseline: {int(protein_target)}g)"
+        fib_lbl = f"Fiber (Target: {int(fiber_target)}g)" if targets_set else f"Fiber (Baseline: {int(fiber_target)}g)"
+        ax3.bar([i - width/2 for i in x], proteins, width=width, color=CYAN_ACCENT, label=pro_lbl, zorder=3)
+        ax3.bar([i + width/2 for i in x], fibers, width=width, color=PURPLE_ACCENT, label=fib_lbl, zorder=3)
         ax3.axhline(protein_target, color=CYAN_ACCENT, linestyle=":", linewidth=1.2, zorder=4)
         ax3.axhline(fiber_target, color=PURPLE_ACCENT, linestyle=":", linewidth=1.2, zorder=4)
         ax3.set_title("Daily Protein & Dietary Fiber (g)", color=TEXT_PRIMARY, fontsize=12, fontweight="bold", pad=10)
@@ -687,6 +990,7 @@ class AnalyticsService:
     ) -> str:
         """Formats the executive text coaching summary for the analytics report."""
         targets = targets or {}
+        targets_set = bool(targets.get("targets_set", False))
         cal_target = targets.get("daily_calorie_target", 2000)
         pro_target = targets.get("daily_protein_target", 150)
         fib_target = targets.get("daily_fiber_target", 25)
@@ -719,15 +1023,16 @@ class AnalyticsService:
         on_track_days = sum(1 for r in logged_days if abs(r["calories"] - cal_target) <= (cal_target * 0.15))
         adherence_pct = round((on_track_days / days_logged_count) * 100)
 
+        lbl = "Target" if targets_set else "Baseline"
         lines = [
             f"📊 <b>Nutrition Trends ({days_window}-Day Digest)</b>",
             f"👤 <b>User:</b> {html.escape(user_name)}",
             f"📅 <b>Logged:</b> {days_logged_count}/{days_window} days | <b>Adherence:</b> {adherence_pct}%",
             "",
             "──────── <b>Daily Averages</b> ────────",
-            f"🔥 <b>Calories:</b> {avg_cals:,.0f} kcal <i>(Target: {cal_target})</i>",
-            f"🥩 <b>Protein:</b> {avg_pro:.1f}g <i>(Target: {pro_target}g)</i>",
-            f"🌾 <b>Fiber:</b> {avg_fiber:.1f}g <i>(Target: {fib_target}g)</i>",
+            f"🔥 <b>Calories:</b> {avg_cals:,.0f} kcal <i>({lbl}: {cal_target:,.0f})</i>",
+            f"🥩 <b>Protein:</b> {avg_pro:.1f}g <i>({lbl}: {pro_target}g)</i>",
+            f"🌾 <b>Fiber:</b> {avg_fiber:.1f}g <i>({lbl}: {fib_target}g)</i>",
             f"🍞 <b>Carbohydrates:</b> {avg_carbs:.1f}g",
             f"🥑 <b>Fat:</b> {avg_fat:.1f}g",
             f"⭐ <b>Average Nutrition Score:</b> {avg_score:.0f}/100",
@@ -735,7 +1040,9 @@ class AnalyticsService:
             "💡 <b>Coach Analysis:</b>",
         ]
 
-        if avg_pro >= pro_target and avg_cals <= cal_target:
+        if not targets_set:
+            lines.append("🎯 <i>Notice: Comparisons use standard reference baselines (2,000 kcal / 150g protein). To set your personal goals, tap 'Set Daily Targets' below or type /targets!</i>")
+        elif avg_pro >= pro_target and avg_cals <= cal_target:
             lines.append("🏆 <i>Outstanding discipline! You're consistently hitting high protein while maintaining your calorie target. Lean mass preservation is on track!</i>")
         elif avg_cals > cal_target * 1.1:
             diff = int(avg_cals - cal_target)
@@ -772,24 +1079,34 @@ def get_gemini_client() -> genai.Client:
 async def analyze_food_with_gemini(
     text_prompt: Optional[str] = None,
     image_bytes: Optional[bytes] = None,
+    images: Optional[List[bytes]] = None,
     mime_type: str = "image/jpeg",
 ) -> MealAnalysisResponse:
-    """Sends photo and/or text to Gemini with structured JSON output."""
+    """Sends photo(s) and/or text to Gemini with structured JSON output."""
     client = get_gemini_client()
     contents = [GEMINI_SYSTEM_PROMPT]
 
-    if image_bytes:
-        contents.append(types.Part.from_bytes(data=image_bytes, mime_type=mime_type))
+    all_images = images if images else ([image_bytes] if image_bytes else [])
+    for img in all_images:
+        contents.append(types.Part.from_bytes(data=img, mime_type=mime_type))
+
+    if len(all_images) > 1:
+        contents.append(
+            f"MULTI-PHOTO MEAL CONTEXT:\n"
+            f"The user uploaded {len(all_images)} photos representing a SINGLE meal spread or restaurant order.\n"
+            f"Evaluate all photos collectively as ONE meal. Do NOT duplicate identical dishes that appear across photos."
+        )
 
     if text_prompt:
         contents.append(
             f"USER NOTE / FOOD DESCRIPTION (STRICT PRIORITY):\n"
             f"\"{text_prompt}\"\n\n"
             f"CRITICAL: The user's input above is absolute ground truth. "
-            f"If the user specifies any item names, preparations, or brands (e.g. 'nutrisoy soy milk no sugar', 'half portion'), "
-            f"identify that exact item with corresponding macro profile."
+            f"If the user specifies any item names, preparations, restaurant/brand names (e.g. 'Ajumma', 'Hai Di Lao', 'nutrisoy'), "
+            f"or portions (e.g. 'half of each', 'shared between 2'), apply your knowledge of that restaurant/brand menu "
+            f"and accurately calculate the corresponding macro profile."
         )
-    elif not image_bytes:
+    elif not all_images:
         raise ValueError("Either text description or image must be provided.")
 
     config = types.GenerateContentConfig(
@@ -824,6 +1141,22 @@ async def analyze_food_with_gemini(
     raise ValueError("Gemini returned an empty or unparseable response.")
 
 
+def extract_category_override(instruction: str) -> Optional[str]:
+    """Extracts explicit meal category target from natural language edit instruction."""
+    low = instruction.lower().strip()
+    if any(k in low for k in ["for breakfast", "as breakfast", "to breakfast", "is breakfast", "was breakfast", "my breakfast"]):
+        return "Breakfast"
+    if any(k in low for k in ["for lunch", "as lunch", "to lunch", "is lunch", "was lunch", "my lunch"]):
+        return "Lunch"
+    if any(k in low for k in ["for dinner", "as dinner", "to dinner", "is dinner", "was dinner", "my dinner"]):
+        return "Dinner"
+    if any(k in low for k in ["for snack", "as snack", "to snack", "is snack", "was snack", "my snack"]):
+        return "Snack"
+    if low in ["breakfast", "lunch", "dinner", "snack"]:
+        return low.capitalize()
+    return None
+
+
 async def edit_meal_with_gemini(
     existing_meal: dict,
     edit_instructions: str,
@@ -840,12 +1173,13 @@ async def edit_meal_with_gemini(
     existing_text = "\n".join(existing_items_summary) or "1 Meal entry"
 
     prompt = (
-        f"CURRENT LOGGED MEAL ITEMS:\n{existing_text}\n\n"
+        f"CURRENT LOGGED MEAL (Category: {existing_meal.get('category', 'Meal')}):\n{existing_text}\n\n"
         f"USER MODIFICATION REQUEST:\n\"{edit_instructions}\"\n\n"
         f"TASK:\n"
-        f"1. Apply the user's adjustments (e.g. portion size, remove items, add items, sugar-free substitutions).\n"
-        f"2. Return the complete updated list of `items` with precise recalculated macros.\n"
-        f"3. Provide a warm, concise note in `motivational_note` summarizing the update."
+        f"1. Apply the user's adjustments (e.g. portion size, remove items, add items, meal category like Breakfast/Lunch/Dinner/Snack, sugar-free substitutions).\n"
+        f"2. If the user indicates a change in meal type/category (e.g. 'this is lunch', 'change to dinner', 'mark as snack'), update the `category` of all items to match that meal type.\n"
+        f"3. Return the complete updated list of `items` with precise recalculated macros.\n"
+        f"4. Provide a warm, concise note in `motivational_note` summarizing the update."
     )
 
     contents = [GEMINI_SYSTEM_PROMPT, prompt]
@@ -866,10 +1200,18 @@ async def edit_meal_with_gemini(
                 ),
                 timeout=20.0,
             )
+            analysis = None
             if response.parsed and isinstance(response.parsed, MealAnalysisResponse):
-                return response.parsed
-            if response.text:
-                return MealAnalysisResponse.model_validate_json(response.text)
+                analysis = response.parsed
+            elif response.text:
+                analysis = MealAnalysisResponse.model_validate_json(response.text)
+
+            if analysis:
+                category_override = extract_category_override(edit_instructions)
+                if category_override:
+                    for it in analysis.items:
+                        it.category = category_override
+                return analysis
         except Exception as e:
             logger.warning(f"Model {model_name} failed during edit: {e}. Trying fallback...")
             last_error = e
@@ -926,12 +1268,59 @@ def classify_text_intent(text: str) -> str:
             return "analytics_30d"
         return "analytics_7d"
 
-    # 6. Meal Editing / Corrections
-    edit_prefixes = ("actually", "wait", "edit", "update", "correction", "change", "instead of", "i meant", "remove the", "no sugar")
-    if t.startswith(edit_prefixes) or "change to" in t or "actually it was" in t:
+    # 6. Targets & Goals
+    target_phrases = [
+        "targets", "goals", "my targets", "my goals", "set targets",
+        "set goals", "change targets", "change goals", "calorie target",
+        "protein target", "target calories", "target protein", "edit targets",
+        "show targets", "what are my targets", "view targets", "my daily targets"
+    ]
+    if t in target_phrases or any(k in t for k in ["set targets", "change targets", "my targets", "calorie target", "protein target", "targets", "goals"]):
+        return "targets"
+
+    # 7. Meal Editing / Corrections / Category Updates
+    edit_prefixes = (
+        "actually", "wait", "edit", "update", "correction", "change",
+        "instead of", "i meant", "remove the", "no sugar", "make that",
+        "this is for", "this was for", "this entry is for", "this meal is for",
+        "this entry was", "this was my", "this is my", "mark as", "switch to",
+        "set category", "category to", "category is",
+    )
+    exact_category_edits = [
+        "for lunch", "for dinner", "for breakfast", "for snack",
+        "lunch", "dinner", "breakfast", "snack",
+        "change to lunch", "change to dinner", "change to breakfast", "change to snack",
+        "it was lunch", "it was dinner", "it was breakfast", "it was snack",
+        "this is lunch", "this is dinner", "this is breakfast", "this is snack",
+        "this was lunch", "this was dinner", "this was breakfast", "this was snack",
+    ]
+    if (
+        t in exact_category_edits
+        or t.startswith(edit_prefixes)
+        or "change to" in t
+        or "actually it was" in t
+        or "this entry is" in t
+        or "this entry was" in t
+    ):
         return "edit"
 
-    # 7. Food Logging
+    # 8. User Feedback & Suggestions
+    feedback_prefixes = ("feedback:", "feedback -", "feedback ", "suggest:", "suggestion:", "bug:", "bug report:")
+    feedback_phrases = [
+        "feedback", "give feedback", "send feedback", "submit feedback",
+        "i have feedback", "leave feedback", "have feedback",
+        "feature request", "i have a feature request", "make a feature request",
+        "suggestion", "i have a suggestion", "suggestions",
+        "bug report", "report a bug", "found a bug", "there is a bug", "i found a bug"
+    ]
+    if (
+        t in feedback_phrases
+        or t.startswith(feedback_prefixes)
+        or any(k in t for k in ["give feedback", "submit feedback", "send feedback", "feature request", "report a bug", "i have a suggestion"])
+    ):
+        return "feedback"
+
+    # 9. Food Logging
     return "food_log"
 
 
@@ -1052,16 +1441,21 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     help_text = (
         "🥗 <b>James Boh Macro Tracker — Help Guide</b>\n\n"
         "📖 <b>How to Use (Zero Commands Needed):</b>\n\n"
-        "• <b>Photo Logging:</b> Send a photo of your plate, drink, or snack.\n"
-        "  💡 <i>Tip: Captions serve as ground truth (e.g. 'Lunch: soy milk no sugar').</i>\n\n"
+        "• <b>Photo & Album Logging:</b> Send single photos or multi-photo albums.\n"
+        "  💡 <i>Tip: Captions serve as ground truth (e.g. '5 items from Ajumma, half of each').</i>\n\n"
         "• <b>Text Logging:</b> Type naturally:\n"
         "  - <code>Chicken breast 200g with broccoli and 1 cup brown rice</code>\n"
         "  - <code>Flat white with oat milk</code>\n"
         "  - <code>/log 2 hard boiled eggs</code>\n\n"
-        "• <b>Smart Editing & Undo:</b>\n"
-        "  - Reply with: <code>Actually no sugar in the tea</code>\n"
+        "• <b>Smart Editing, Quote-Reply & Categories:</b>\n"
+        "  - Swipe/reply to any past meal message: <code>this entry is for lunch</code>\n"
+        "  - Or type: <code>Actually no sugar in the tea</code>\n"
         "  - <code>/edit change chicken to 250g</code>\n"
         "  - <code>/undo</code> - Instantly delete your last logged meal\n\n"
+        "• <b>Daily Targets & Goals:</b>\n"
+        "  - <code>/targets</code> or <code>/goals</code> - Set goals with 1-tap presets (Fat Loss, Maintenance, Bulk, Custom)\n"
+        "  - Or type: <code>/targets 1800 140 25</code> (Calories, Protein, Fiber)\n"
+        "  - Or ask: <i>'change targets'</i>, <i>'set goals'</i>\n\n"
         "• <b>Analytics & Visual Trends:</b>\n"
         "  - Ask: <i>'How did I do this week?'</i> or type <code>/analytics</code>\n"
         "  - <code>/weekly</code> - 7-day dark-mode chart card\n"
@@ -1070,36 +1464,49 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "  - Ask: <i>'Can I export my data?'</i> or type <code>/export</code> (CSV download)\n"
         "  - <code>/privacy</code> - View data residency & privacy statement\n"
         "  - <code>/delete</code> - Permanently erase all your data (Right to Erasure)\n\n"
+        "• <b>Feedback & Suggestions:</b>\n"
+        "  - <code>/feedback &lt;your idea&gt;</code> - Share suggestions, feature requests, or report bugs\n"
+        "  - Or ask: <i>'I have a suggestion'</i>, <i>'report a bug'</i>\n\n"
         "💼 <i>Connect: <a href=\"https://www.linkedin.com/in/jamesboh/\">James Boh on LinkedIn</a></i>"
     )
     if is_admin(update):
         help_text += (
             "\n\n🛠️ <b>Admin Commands:</b>\n"
+            "• <code>/metrics</code> - View platform metrics, DAU/WAU/MAU & log volume\n"
+            "• <code>/viewfeedback</code> - Review recent user feedback submissions\n"
             "• <code>/release</code> - Broadcast release notes\n"
             "• <code>/broadcast &lt;msg&gt;</code> - Broadcast custom message"
         )
-    await update.message.reply_text(help_text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💬 Send Feedback", callback_data="prompt_feedback")]
+    ])
+    await update.message.reply_text(help_text, parse_mode=ParseMode.HTML, disable_web_page_preview=True, reply_markup=keyboard)
 
 
 async def changelog_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles /changelog command."""
     changelog_text = (
         "📋 <b>Product Changelog — James Boh Macro Tracker</b>\n\n"
-        "<b>v1.3.3 (Current):</b>\n"
+        "<b>v1.3.5 (Current):</b>\n"
+        "• 🎯 <b>Target Management:</b> Set custom goals with 1-tap presets (/targets, /goals).\n"
+        "• ⚖️ <b>Baseline Mode:</b> Clean baseline comparisons when targets are unconfigured.\n"
+        "• 💬 <b>User Feedback System:</b> Submit ideas or bug reports (/feedback, /suggest) with real-time admin alerts.\n"
+        "• 📈 <b>Admin Metrics Dashboard:</b> Live user growth, DAU/WAU/MAU & log volume (/metrics).\n"
+        "• 📊 <b>Donut Chart Centering:</b> Perfect text alignment & high-contrast macro labels.\n\n"
+        "<b>v1.3.4:</b>\n"
+        "• 📸 <b>Multi-Photo Albums:</b> Evaluates multi-dish spreads in one go with zero duplicate entries.\n"
+        "• 💬 <b>Quote-Reply Editing:</b> Swipe/reply to any past meal to update ingredients, portions, or categories.\n"
+        "• 🏷️ <b>Category Overrides:</b> Change meal categories conversationally (e.g. <i>'this entry is for lunch'</i>).\n\n"
+        "<b>v1.3.3:</b>\n"
         "• ✨ <b>Clean Onboarding:</b> Ultra-simple, friendly welcome message (/start).\n"
         "• 💬 <b>Natural Daily Totals:</b> Ask naturally (e.g. <i>'what are my calories today?'</i>) without slash commands.\n"
         "• 🛡️ <b>Atomic Rollback:</b> Guarantees no phantom entries if message delivery fails.\n\n"
         "<b>v1.3.0:</b>\n"
         "• 🔒 <b>Cloud Firestore Migration:</b> Multi-tenant database with strict private data isolation.\n"
         "• 📊 <b>Visual Analytics:</b> Dark-mode chart cards & weekly trends (/analytics, /weekly, /monthly).\n"
-        "• ✏️ <b>Smart Meal Editing:</b> Correct entries naturally (e.g. <i>'actually no sugar'</i>) or with /edit & /undo.\n"
+        "• ✏️ <b>Smart Meal Editing:</b> Correct entries naturally or with /edit & /undo.\n"
         "• 📥 <b>Data Portability:</b> Download your full history as a CSV file (/export).\n"
         "• 🛡️ <b>Data Governance:</b> Singapore PDPA compliance & self-service data erasure (/delete).\n\n"
-        "<b>v1.2.0:</b>\n"
-        "• ☁️ <b>24/7 Cloud Run:</b> Serverless webhooks with zero idle cost.\n"
-        "• 📢 <b>Broadcasts:</b> Admin release notes distribution.\n\n"
-        "<b>v1.1.0:</b>\n"
-        "• 🥗 <b>Dietary Fiber:</b> Satiety & gut health tracking.\n\n"
         "💼 <i>Connect: <a href=\"https://www.linkedin.com/in/jamesboh/\">James Boh on LinkedIn</a></i>"
     )
     await update.message.reply_text(changelog_text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
@@ -1123,15 +1530,20 @@ async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         cal_target = profile.get("daily_calorie_target", 2000)
         pro_target = profile.get("daily_protein_target", 150)
         fib_target = profile.get("daily_fiber_target", 25)
+        targets_set = profile.get("targets_set", False)
+
+        cal_display = f"<b>{totals['calories']:.0f} kcal</b> / {cal_target:,.0f}" if targets_set else f"<b>{totals['calories']:.0f} kcal</b>"
+        pro_display = f"<b>{totals['protein']:.1f} g</b> / {pro_target:,.0f}g" if targets_set else f"<b>{totals['protein']:.1f} g</b>"
+        fib_display = f"<b>{totals['fiber']:.1f} g</b> / {fib_target:,.0f}g" if targets_set else f"<b>{totals['fiber']:.1f} g</b>"
 
         summary_text = (
             f"📊 <b>Today's Cumulative Macros ({today_prefix})</b>\n"
             f"👤 <b>User:</b> {html.escape(user_name)}\n\n"
-            f"🔥 <b>Total Calories:</b> <b>{totals['calories']:.0f} kcal</b> / {cal_target}\n"
-            f"🥩 <b>Protein:</b> <b>{totals['protein']:.1f} g</b> / {pro_target}g\n"
+            f"🔥 <b>Total Calories:</b> {cal_display}\n"
+            f"🥩 <b>Protein:</b> {pro_display}\n"
             f"🍞 <b>Carbohydrates:</b> <b>{totals['carbs']:.1f} g</b>\n"
             f"🥑 <b>Fat:</b> <b>{totals['fat']:.1f} g</b>\n"
-            f"🥗 <b>Dietary Fiber:</b> <b>{totals['fiber']:.1f} g</b> / {fib_target}g\n\n"
+            f"🥗 <b>Dietary Fiber:</b> {fib_display}\n\n"
             f"📝 <i>Meals logged today:</i> {totals['meal_count']} ({totals['item_count']} items)\n\n"
             "💡 <i>Tip: Type /analytics to see your 7-day trend chart!</i>"
         )
@@ -1158,6 +1570,7 @@ async def send_analytics_report(
     cal_target = profile.get("daily_calorie_target", 2000)
     pro_target = profile.get("daily_protein_target", 150)
     fib_target = profile.get("daily_fiber_target", 25)
+    targets_set = profile.get("targets_set", False)
 
     text_summary = AnalyticsService.format_analytics_text(
         daily_records=records,
@@ -1166,10 +1579,14 @@ async def send_analytics_report(
         targets=profile,
     )
 
+    btn_target_label = "🎯 Edit Targets" if targets_set else "🎯 Set Daily Targets"
     keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("📊 7 Days", callback_data="analytics_7d"),
             InlineKeyboardButton("🗓️ 30 Days", callback_data="analytics_30d"),
+        ],
+        [
+            InlineKeyboardButton(btn_target_label, callback_data="menu_targets"),
         ]
     ])
 
@@ -1182,6 +1599,7 @@ async def send_analytics_report(
             protein_target=pro_target,
             fiber_target=fib_target,
             days_window=days_window,
+            targets_set=targets_set,
         )
         await context.bot.send_photo(
             chat_id=chat_id,
@@ -1349,26 +1767,28 @@ async def execute_meal_edit(
     chat_id: int,
     user_name: str,
     edit_instructions: str,
+    target_meal: Optional[dict] = None,
 ) -> None:
-    """Helper to modify the last logged meal with Gemini."""
-    last_meal = await firestore_service.get_last_meal(chat_id)
-    if not last_meal:
+    """Helper to modify a logged meal (either target_meal or most recent) with Gemini."""
+    if target_meal is None:
+        target_meal = await firestore_service.get_last_meal(chat_id)
+    if not target_meal:
         await update.message.reply_text("ℹ️ You have no logged meals to edit yet. Send a photo or text to log your first meal!")
         return
 
     status_msg = await update.message.reply_text("✏️ <i>Recalculating meal with Gemini AI...</i>", parse_mode=ParseMode.HTML)
     try:
-        updated_analysis = await edit_meal_with_gemini(last_meal, edit_instructions)
+        updated_analysis = await edit_meal_with_gemini(target_meal, edit_instructions)
         if not updated_analysis.items:
-            await firestore_service.delete_meal(chat_id, last_meal["id"])
+            await firestore_service.delete_meal(chat_id, target_meal["id"])
             await status_msg.edit_text("🗑️ Meal was cleared based on your instruction.", parse_mode=ParseMode.HTML)
             return
 
         now = datetime.now(LOCAL_TZ)
-        today_prefix = last_meal.get("date") or now.strftime("%Y-%m-%d")
+        today_prefix = target_meal.get("date") or now.strftime("%Y-%m-%d")
 
         updated_meal_data = {
-            "category": updated_analysis.items[0].category if updated_analysis.items else last_meal.get("category", "Meal"),
+            "category": updated_analysis.items[0].category if updated_analysis.items else target_meal.get("category", "Meal"),
             "total_calories": round(sum(i.calories for i in updated_analysis.items), 1),
             "total_protein": round(sum(i.protein for i in updated_analysis.items), 1),
             "total_carbs": round(sum(i.carbohydrates for i in updated_analysis.items), 1),
@@ -1379,12 +1799,12 @@ async def execute_meal_edit(
             "items": [i.model_dump() for i in updated_analysis.items],
         }
 
-        await firestore_service.update_meal(chat_id, last_meal["id"], updated_meal_data)
+        await firestore_service.update_meal(chat_id, target_meal["id"], updated_meal_data)
         today_totals = await firestore_service.get_user_today_totals(chat_id, today_prefix)
 
         reply_html = format_telegram_reply(
             user_name=user_name,
-            datetime_str=last_meal.get("timestamp") or str(now),
+            datetime_str=target_meal.get("timestamp") or str(now),
             items=updated_analysis.items,
             today_totals=today_totals,
             motivational_note=updated_analysis.motivational_note,
@@ -1454,6 +1874,75 @@ async def log_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text("ℹ️ <b>Usage:</b> <code>/log &lt;what you ate&gt;</code>\n<i>Example: /log 2 eggs with avocado toast</i>", parse_mode=ParseMode.HTML)
         return
     await process_and_log_meal(update=update, text_prompt=food_text, image_bytes=None)
+
+
+async def targets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles /targets: view or customize daily calorie and macro goals."""
+    if not is_user_authorized(update):
+        await update.message.reply_text("⛔ You are not authorized to use this bot.")
+        return
+
+    chat_id = update.effective_chat.id
+    raw_text = update.message.text or "" if update.message else ""
+    _, _, args_str = raw_text.partition(" ")
+    args = [a for a in args_str.split() if a]
+
+    profile = await firestore_service.get_user_profile(chat_id)
+    cal = profile.get("daily_calorie_target", 2000)
+    pro = profile.get("daily_protein_target", 150)
+    fib = profile.get("daily_fiber_target", 25)
+    is_custom = profile.get("targets_set", False)
+
+    # If user provided arguments: /targets 1800 140 25
+    if args:
+        try:
+            new_cal = float(args[0])
+            new_pro = float(args[1]) if len(args) > 1 else pro
+            new_fib = float(args[2]) if len(args) > 2 else fib
+            await firestore_service.update_user_targets(
+                chat_id, calorie_target=new_cal, protein_target=new_pro, fiber_target=new_fib
+            )
+            msg = (
+                "✅ <b>Daily Targets Updated!</b>\n\n"
+                f"🔥 <b>Calories:</b> {new_cal:,.0f} kcal\n"
+                f"🥩 <b>Protein:</b> {new_pro:.1f} g\n"
+                f"🥗 <b>Fiber:</b> {new_fib:.1f} g\n\n"
+                "Your trend charts and coaching analysis will now calibrate to these goals! 🎯"
+            )
+            if update.message:
+                await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+            elif update.callback_query:
+                await update.callback_query.message.reply_text(msg, parse_mode=ParseMode.HTML)
+            return
+        except ValueError:
+            pass
+
+    status_badge = "✅ <b>Customized</b>" if is_custom else "⚠️ <b>Default Baseline (Unset)</b>"
+    text = (
+        f"🎯 <b>Your Daily Nutrition Targets</b>\n\n"
+        f"Status: {status_badge}\n"
+        f"🔥 <b>Calories:</b> {cal:,.0f} kcal\n"
+        f"🥩 <b>Protein:</b> {pro:.1f} g\n"
+        f"🥗 <b>Dietary Fiber:</b> {fib:.1f} g\n\n"
+        "Choose a goal preset below or reply with your custom numbers:\n"
+        "• <code>/targets 1800 140 25</code> <i>(&lt;calories&gt; &lt;protein&gt; &lt;fiber&gt;)</i>"
+    )
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📉 Fat Loss (1,700 kcal)", callback_data="preset_cut"),
+            InlineKeyboardButton("⚖️ Maintenance (2,000 kcal)", callback_data="preset_maintain"),
+        ],
+        [
+            InlineKeyboardButton("💪 Lean Bulk (2,400 kcal)", callback_data="preset_bulk"),
+            InlineKeyboardButton("✏️ Custom Targets", callback_data="prompt_custom_targets"),
+        ]
+    ])
+
+    if update.callback_query:
+        await update.callback_query.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+    elif update.message:
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
 
 
 async def release_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1538,6 +2027,208 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await status_msg.edit_text(f"✅ <b>Broadcast Complete!</b>\nDelivered to {sent}/{len(subscribers)} subscriber(s).", parse_mode=ParseMode.HTML)
 
 
+async def notify_admins_of_feedback(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    user_name: str,
+    feedback_text: str,
+    category: str,
+) -> None:
+    """Dispatches a real-time notification to all authorized administrators."""
+    admin_cids = await firestore_service.get_admin_chat_ids()
+    now_str = datetime.now(LOCAL_TZ).strftime("%d %b %Y, %H:%M SGT")
+
+    category_badge = {
+        "bug_report": "🐛 Bug Report",
+        "feature_request": "💡 Feature Request",
+        "general": "💬 General Feedback",
+    }.get(category, "💬 Feedback")
+
+    admin_msg = (
+        "📬 <b>New User Feedback Received!</b>\n\n"
+        f"👤 <b>From:</b> {html.escape(user_name)} (<code>{chat_id}</code>)\n"
+        f"📅 <b>Time:</b> {now_str}\n"
+        f"🏷️ <b>Category:</b> {category_badge}\n\n"
+        f"💬 <b>Message:</b>\n"
+        f"<i>\"{html.escape(feedback_text)}\"</i>"
+    )
+
+    for admin_id in admin_cids:
+        try:
+            await context.bot.send_message(
+                chat_id=admin_id,
+                text=admin_msg,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+        except Exception as e:
+            logger.warning(f"Could not dispatch admin feedback notification to {admin_id}: {e}")
+
+
+async def submit_feedback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    feedback_text: str,
+    category: str = "general",
+) -> None:
+    """Saves feedback to Firestore, notifies admins, and sends confirmation to the user."""
+    chat_id = update.effective_chat.id
+    user_name = get_user_display_name(update)
+    clean_text = feedback_text.strip()
+    if not clean_text:
+        context.user_data["awaiting_feedback"] = True
+        if update.message:
+            await update.message.reply_text("⚠️ Feedback message cannot be empty. Please type your message below.")
+        return
+
+    # Auto-detect category from contents
+    lower_f = clean_text.lower()
+    if any(k in lower_f for k in ["bug", "error", "broken", "issue", "crash", "wrong", "fail"]):
+        category = "bug_report"
+    elif any(k in lower_f for k in ["feature", "add ", "would be great", "can you", "request", "support for", "integrate"]):
+        category = "feature_request"
+
+    await firestore_service.save_feedback(
+        chat_id=chat_id,
+        user_name=user_name,
+        feedback_text=clean_text,
+        category=category,
+    )
+
+    await notify_admins_of_feedback(context, chat_id, user_name, clean_text, category)
+
+    category_label = {
+        "bug_report": "🐛 Bug Report",
+        "feature_request": "💡 Feature Request",
+        "general": "💬 Feedback",
+    }.get(category, "💬 Feedback")
+
+    confirm_msg = (
+        f"🙏 <b>Thank You for Your Feedback!</b>\n\n"
+        f"Your {category_label.lower()} has been delivered directly to the developer:\n"
+        f"<i>\"{html.escape(clean_text)}\"</i>\n\n"
+        "We review every message to make James Boh Macro Tracker even better! 🚀"
+    )
+    if update.message:
+        await update.message.reply_text(confirm_msg, parse_mode=ParseMode.HTML)
+    elif update.callback_query:
+        await update.callback_query.message.reply_text(confirm_msg, parse_mode=ParseMode.HTML)
+
+
+async def feedback_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles /feedback and /suggest commands."""
+    if not is_user_authorized(update):
+        if update.message:
+            await update.message.reply_text("⛔ You are not authorized to use this bot.")
+        return
+
+    raw_text = (update.message.text or "") if update.message else ""
+    _, _, message_to_send = raw_text.partition(" ")
+    message_to_send = message_to_send.strip()
+
+    if message_to_send:
+        await submit_feedback(update, context, message_to_send)
+    else:
+        context.user_data["awaiting_feedback"] = True
+        prompt_text = (
+            "💬 <b>We'd Love Your Feedback!</b>\n\n"
+            "Have an idea for a new feature, found an issue, or want to share your experience with the tracker?\n\n"
+            "👉 <i>Simply reply to this message or type your feedback below:</i>"
+        )
+        if update.message:
+            await update.message.reply_text(prompt_text, parse_mode=ParseMode.HTML)
+        elif update.callback_query:
+            await update.callback_query.message.reply_text(prompt_text, parse_mode=ParseMode.HTML)
+
+
+async def viewfeedback_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin-only command to view recent user feedbacks: /viewfeedback or /feedbacks"""
+    if not is_admin(update):
+        if update.message:
+            await update.message.reply_text("⛔ Unauthorized. Only the admin can review feedback.")
+        return
+
+    feedbacks = await firestore_service.get_recent_feedback(limit=10)
+    if not feedbacks:
+        if update.message:
+            await update.message.reply_text("📭 No user feedback submissions found yet.")
+        return
+
+    lines = ["📋 <b>Recent User Feedback Submissions (Last 10):</b>\n"]
+    for i, fb in enumerate(feedbacks, start=1):
+        uname = fb.get("user_name", "Unknown")
+        cid = fb.get("chat_id", "")
+        text = fb.get("feedback_text", "")
+        cat = fb.get("category", "general")
+        created = fb.get("created_at", "")
+        time_display = created[:16].replace("T", " ") if created else ""
+        lines.append(
+            f"<b>{i}. {html.escape(uname)}</b> (<code>{cid}</code>) — <i>{time_display} SGT</i> [{cat}]\n"
+            f"   <i>\"{html.escape(text)}\"</i>\n"
+        )
+
+    if update.message:
+        await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
+
+async def metrics_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin-only command to view platform metrics, active users, and log volume."""
+    if not is_admin(update):
+        if update.message:
+            await update.message.reply_text("⛔ Unauthorized. Only the bot administrator can view metrics.")
+        return
+
+    status_msg = None
+    if update.message:
+        status_msg = await update.message.reply_text("⏳ <i>Aggregating platform metrics from Firestore...</i>", parse_mode=ParseMode.HTML)
+
+    try:
+        m = await firestore_service.get_platform_metrics()
+
+        user_lines = []
+        for i, u in enumerate(m["user_breakdown"][:10], start=1):
+            la = u["last_active"]
+            la_display = la[:16].replace("T", " ") if la and la != "Never" else "Never"
+            user_lines.append(f"<b>{i}. {html.escape(u['user_name'])}</b>: {u['meals_count']} meals <i>(Active: {la_display})</i>")
+
+        leaderboard_text = "\n".join(user_lines) if user_lines else "<i>No users yet</i>"
+
+        report = (
+            "📊 <b>James Boh Macro Tracker — Platform Metrics</b>\n"
+            f"📅 <i>As of {m['generated_at']}</i>\n\n"
+            "👥 <b>User Growth & Community:</b>\n"
+            f"• Total Registered Users: <b>{m['total_users']}</b>\n"
+            f"• Activated Users (≥1 meal): <b>{m['activated_users']} ({m['activation_rate']}%)</b>\n"
+            f"• New Signups Today: <b>+{m['new_users_today']}</b> | This Week: <b>+{m['new_users_7d']}</b>\n\n"
+            "⚡ <b>Active Users & Retention:</b>\n"
+            f"• DAU (Active 24h / Today): <b>{m['dau']}</b>\n"
+            f"• WAU (Active 7 Days): <b>{m['wau']}</b>\n"
+            f"• MAU (Active 30 Days): <b>{m['mau']}</b>\n"
+            f"• Habit Stickiness (DAU/MAU): <b>{m['stickiness']}%</b>\n\n"
+            "🍽️ <b>Log Volume & Velocity:</b>\n"
+            f"• Total Meals Logged: <b>{m['total_meals']}</b> ({m['total_items']} items)\n"
+            f"• Meals Logged Today: <b>{m['meals_today']}</b>\n"
+            f"• Meals Logged (Last 7 Days): <b>{m['meals_7d']}</b>\n"
+            f"• Avg Meals / Active User: <b>{m['avg_meals_per_active']}</b>\n\n"
+            "💬 <b>Voice of Customer:</b>\n"
+            f"• Total Feedback Submissions: <b>{m['feedback_count']}</b> (use /viewfeedback)\n\n"
+            "🏆 <b>User Activity Breakdown:</b>\n"
+            f"{leaderboard_text}"
+        )
+
+        if status_msg:
+            await status_msg.edit_text(report, parse_mode=ParseMode.HTML)
+        elif update.message:
+            await update.message.reply_text(report, parse_mode=ParseMode.HTML)
+    except Exception as e:
+        logger.error(f"Failed to generate metrics: {e}", exc_info=True)
+        err_text = f"⚠️ Error computing platform metrics: {html.escape(str(e))}"
+        if status_msg:
+            await status_msg.edit_text(err_text, parse_mode=ParseMode.HTML)
+        elif update.message:
+            await update.message.reply_text(err_text, parse_mode=ParseMode.HTML)
+
+
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles inline buttons for analytics time ranges and delete confirmation."""
     query = update.callback_query
@@ -1558,6 +2249,58 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         )
     elif data == "cancel_delete":
         await query.edit_message_text("✅ Deletion canceled. Your data remains safe.", parse_mode=ParseMode.HTML)
+    elif data == "menu_targets":
+        await targets_command(update, context)
+    elif data == "preset_cut":
+        await firestore_service.update_user_targets(chat_id, calorie_target=1700, protein_target=140, fiber_target=25)
+        await query.edit_message_text(
+            "✅ <b>Daily Targets Set: Fat Loss / Cut</b>\n\n"
+            "🔥 <b>Calories:</b> 1,700 kcal\n"
+            "🥩 <b>Protein:</b> 140.0 g\n"
+            "🥗 <b>Dietary Fiber:</b> 25.0 g\n\n"
+            "Your analytics and trend charts will now calibrate against these goals! 🎯\n"
+            "<i>Change anytime via /targets.</i>",
+            parse_mode=ParseMode.HTML,
+        )
+    elif data == "preset_maintain":
+        await firestore_service.update_user_targets(chat_id, calorie_target=2000, protein_target=130, fiber_target=25)
+        await query.edit_message_text(
+            "✅ <b>Daily Targets Set: Maintenance</b>\n\n"
+            "🔥 <b>Calories:</b> 2,000 kcal\n"
+            "🥩 <b>Protein:</b> 130.0 g\n"
+            "🥗 <b>Dietary Fiber:</b> 25.0 g\n\n"
+            "Your analytics and trend charts will now calibrate against these goals! 🎯\n"
+            "<i>Change anytime via /targets.</i>",
+            parse_mode=ParseMode.HTML,
+        )
+    elif data == "preset_bulk":
+        await firestore_service.update_user_targets(chat_id, calorie_target=2400, protein_target=160, fiber_target=30)
+        await query.edit_message_text(
+            "✅ <b>Daily Targets Set: Lean Muscle Gain</b>\n\n"
+            "🔥 <b>Calories:</b> 2,400 kcal\n"
+            "🥩 <b>Protein:</b> 160.0 g\n"
+            "🥗 <b>Dietary Fiber:</b> 30.0 g\n\n"
+            "Your analytics and trend charts will now calibrate against these goals! 🎯\n"
+            "<i>Change anytime via /targets.</i>",
+            parse_mode=ParseMode.HTML,
+        )
+    elif data == "prompt_custom_targets":
+        context.user_data["awaiting_targets"] = True
+        await query.edit_message_text(
+            "✏️ <b>Enter Custom Daily Targets</b>\n\n"
+            "Reply with your numbers in this format:\n"
+            "<code>&lt;calories&gt; &lt;protein&gt; [fiber]</code>\n\n"
+            "<i>Example: 1800 145 25</i>",
+            parse_mode=ParseMode.HTML,
+        )
+    elif data == "prompt_feedback":
+        context.user_data["awaiting_feedback"] = True
+        await query.message.reply_text(
+            "💬 <b>Feedback & Suggestions</b>\n\n"
+            "We'd love to hear your thoughts! Whether it's a feature request, bug report, or idea to improve the tracker, please let us know.\n\n"
+            "👉 <i>Type your feedback below:</i>",
+            parse_mode=ParseMode.HTML,
+        )
 
 
 # =====================================================================
@@ -1567,6 +2310,8 @@ async def process_and_log_meal(
     update: Update,
     text_prompt: Optional[str] = None,
     image_bytes: Optional[bytes] = None,
+    images: Optional[List[bytes]] = None,
+    status_msg: Optional[object] = None,
 ) -> None:
     """Common pipeline for parsing food, saving to Firestore, dual-writing to sheets, and sending reply."""
     if not is_user_authorized(update):
@@ -1580,10 +2325,15 @@ async def process_and_log_meal(
     today_prefix = now.strftime("%Y-%m-%d")
 
     await update.message.chat.send_action(action=ChatAction.TYPING)
-    status_msg = await update.message.reply_text("🔍 <i>Analyzing meal with Gemini AI...</i>", parse_mode=ParseMode.HTML)
+    if status_msg is None:
+        status_msg = await update.message.reply_text("🔍 <i>Analyzing meal with Gemini AI...</i>", parse_mode=ParseMode.HTML)
 
     try:
-        meal_result = await analyze_food_with_gemini(text_prompt=text_prompt, image_bytes=image_bytes)
+        meal_result = await analyze_food_with_gemini(
+            text_prompt=text_prompt,
+            image_bytes=image_bytes,
+            images=images,
+        )
     except Exception as e:
         logger.error(f"Gemini analysis failed: {e}", exc_info=True)
         err_msg = str(e)
@@ -1607,6 +2357,9 @@ async def process_and_log_meal(
         )
         return
 
+    user_msg_id = update.message.message_id if update.message else None
+    bot_msg_id = getattr(status_msg, "message_id", None)
+
     # Save to Firestore (Primary Multi-Tenant Store)
     meal_doc = {
         "date": today_prefix,
@@ -1622,6 +2375,8 @@ async def process_and_log_meal(
         "motivational_note": meal_result.motivational_note,
         "raw_text_prompt": text_prompt,
         "items": [i.model_dump() for i in meal_result.items],
+        "user_message_id": user_msg_id,
+        "bot_message_id": bot_msg_id,
     }
 
     saved_meal_id = None
@@ -1671,7 +2426,9 @@ async def process_and_log_meal(
     except Exception as e:
         logger.warning(f"Could not edit status message ({e}), sending new reply message instead.")
         try:
-            await update.message.reply_text(reply_html, parse_mode=ParseMode.HTML)
+            sent_msg = await update.message.reply_text(reply_html, parse_mode=ParseMode.HTML)
+            if saved_meal_id and sent_msg:
+                await firestore_service.update_meal(chat_id, saved_meal_id, {"bot_message_id": sent_msg.message_id})
         except Exception as err2:
             logger.error(f"Failed to deliver meal confirmation to user: {err2}. Rolling back meal {saved_meal_id}.")
             if saved_meal_id:
@@ -1680,27 +2437,103 @@ async def process_and_log_meal(
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles incoming food/drink photos."""
+    """Handles incoming food/drink photos, including multi-photo albums (media groups)."""
     if not update.message or not update.message.photo:
         return
 
+    user_name = get_user_display_name(update)
+    first_name = update.effective_user.first_name or "" if update.effective_user else ""
+    asyncio.create_task(firestore_service.touch_user_activity(update.effective_chat.id, user_name, first_name))
+
     caption = update.message.caption or ""
     photo = update.message.photo[-1]
+    media_group_id = update.message.media_group_id
 
-    status_msg = await update.message.reply_text("📥 <i>Downloading image...</i>", parse_mode=ParseMode.HTML)
+    # If it's a standalone single photo, process immediately
+    if not media_group_id:
+        status_msg = await update.message.reply_text("📥 <i>Downloading image...</i>", parse_mode=ParseMode.HTML)
+        try:
+            tg_file = await photo.get_file()
+            photo_bytes = await tg_file.download_as_bytearray()
+            await status_msg.delete()
+        except Exception as e:
+            logger.error(f"Failed to download photo: {e}", exc_info=True)
+            await status_msg.edit_text(f"❌ Failed to download photo: {html.escape(str(e))}")
+            return
+
+        await process_and_log_meal(
+            update=update,
+            text_prompt=caption if caption.strip() else None,
+            image_bytes=bytes(photo_bytes),
+        )
+        return
+
+    # Multi-Photo Album (Media Group) Handling
+    is_leader = False
+    async with _MEDIA_GROUP_GLOBAL_LOCK:
+        if media_group_id not in _MEDIA_GROUP_BUFFERS:
+            buffer = MediaGroupBuffer(media_group_id, update)
+            _MEDIA_GROUP_BUFFERS[media_group_id] = buffer
+            is_leader = True
+        else:
+            buffer = _MEDIA_GROUP_BUFFERS[media_group_id]
+
+    status_msg = None
+    if is_leader:
+        status_msg = await update.message.reply_text(
+            "📥 <i>Receiving photo album...</i>",
+            parse_mode=ParseMode.HTML
+        )
+
     try:
         tg_file = await photo.get_file()
         photo_bytes = await tg_file.download_as_bytearray()
-        await status_msg.delete()
     except Exception as e:
-        logger.error(f"Failed to download photo: {e}", exc_info=True)
-        await status_msg.edit_text(f"❌ Failed to download photo: {html.escape(str(e))}")
+        logger.error(f"Failed to download album photo ({media_group_id}): {e}", exc_info=True)
+        photo_bytes = None
+
+    async with buffer.lock:
+        if photo_bytes:
+            buffer.images.append(bytes(photo_bytes))
+        if caption.strip() and not buffer.caption:
+            buffer.caption = caption.strip()
+        buffer.last_received_time = time.monotonic()
+
+    # Non-leader tasks finish here once photo is buffered
+    if not is_leader:
         return
 
+    # Leader task waits for remaining album photos to arrive
+    start_time = time.monotonic()
+    while True:
+        await asyncio.sleep(0.4)
+        now_t = time.monotonic()
+        async with buffer.lock:
+            idle_time = now_t - buffer.last_received_time
+            total_time = now_t - start_time
+        if idle_time >= 1.0 or total_time >= 5.0:
+            break
+
+    # Evict buffer from global map
+    async with _MEDIA_GROUP_GLOBAL_LOCK:
+        _MEDIA_GROUP_BUFFERS.pop(media_group_id, None)
+
+    if not buffer.images:
+        if status_msg:
+            await status_msg.edit_text("❌ Failed to download album images. Please try again.")
+        return
+
+    if status_msg:
+        await status_msg.edit_text(
+            f"🔍 <i>Analyzing meal ({len(buffer.images)} photos) with Gemini AI...</i>",
+            parse_mode=ParseMode.HTML
+        )
+
     await process_and_log_meal(
-        update=update,
-        text_prompt=caption if caption.strip() else None,
-        image_bytes=bytes(photo_bytes),
+        update=buffer.initial_update,
+        text_prompt=buffer.caption if buffer.caption else None,
+        images=buffer.images,
+        status_msg=status_msg,
     )
 
 
@@ -1708,6 +2541,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     """
     Intelligent Conversational Router:
     Routes incoming text messages to Analytics, Export, Privacy, Deletion, Editing, Undo, or Food Logging.
+    Also handles Quote/Reply to edit previous meal entries directly.
     """
     if not update.message or not update.message.text:
         return
@@ -1718,12 +2552,59 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     chat_id = update.effective_chat.id
     user_name = get_user_display_name(update)
+    first_name = update.effective_user.first_name or "" if update.effective_user else ""
+    asyncio.create_task(firestore_service.touch_user_activity(chat_id, user_name, first_name))
 
-    # Check if user is in an active edit prompt flow
+    # Check if user is in an active targets prompt flow
+    if context.user_data.get("awaiting_targets"):
+        context.user_data["awaiting_targets"] = False
+        parts = [p for p in text.replace(",", " ").split() if p]
+        try:
+            new_cal = float(parts[0])
+            new_pro = float(parts[1]) if len(parts) > 1 else 150.0
+            new_fib = float(parts[2]) if len(parts) > 2 else 25.0
+            await firestore_service.update_user_targets(
+                chat_id, calorie_target=new_cal, protein_target=new_pro, fiber_target=new_fib
+            )
+            await update.message.reply_text(
+                "✅ <b>Custom Daily Targets Saved!</b>\n\n"
+                f"🔥 <b>Calories:</b> {new_cal:,.0f} kcal\n"
+                f"🥩 <b>Protein:</b> {new_pro:.1f} g\n"
+                f"🥗 <b>Dietary Fiber:</b> {new_fib:.1f} g\n\n"
+                "Your charts and coaching summaries are now calibrated to your numbers! 🎯",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        except Exception:
+            await update.message.reply_text(
+                "⚠️ Could not parse targets. Please reply with numbers like: <code>1800 140 25</code> or type /targets to pick a preset.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+    # Check if user is in an active edit prompt flow (e.g. from /edit without arguments)
     if context.user_data.get("awaiting_edit"):
         context.user_data["awaiting_edit"] = False
         await execute_meal_edit(update, context, chat_id, user_name, text)
         return
+
+    # Check if user is in an active feedback prompt flow
+    if context.user_data.get("awaiting_feedback"):
+        context.user_data["awaiting_feedback"] = False
+        await submit_feedback(update, context, text)
+        return
+
+    # Check if message is a Quote/Reply to an existing message
+    reply_to = update.message.reply_to_message
+    if reply_to:
+        target_meal = await firestore_service.find_meal_by_message_id(chat_id, reply_to.message_id)
+        if not target_meal and reply_to.from_user and reply_to.from_user.is_bot:
+            # If replied to bot meal card or prompt, target the most recent meal
+            target_meal = await firestore_service.get_last_meal(chat_id)
+
+        if target_meal:
+            await execute_meal_edit(update, context, chat_id, user_name, text, target_meal=target_meal)
+            return
 
     # Classify intent via Natural Language Router
     intent = classify_text_intent(text)
@@ -1738,6 +2619,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await privacy_command(update, context)
     elif intent == "delete":
         await delete_command(update, context)
+    elif intent == "targets":
+        await targets_command(update, context)
     elif intent == "analytics_7d":
         status_msg = await update.message.reply_text("📈 <i>Generating 7-day analytics...</i>", parse_mode=ParseMode.HTML)
         await send_analytics_report(chat_id, user_name, context, days_window=7)
@@ -1748,6 +2631,23 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await status_msg.delete()
     elif intent == "edit":
         await execute_meal_edit(update, context, chat_id, user_name, text)
+    elif intent == "feedback":
+        lower_t = text.lower()
+        cleaned_msg = ""
+        for prefix in ["feedback:", "feedback -", "feedback ", "suggest:", "suggestion:", "bug:", "bug report:"]:
+            if lower_t.startswith(prefix):
+                cleaned_msg = text[len(prefix):].strip()
+                break
+        if cleaned_msg:
+            await submit_feedback(update, context, cleaned_msg)
+        else:
+            context.user_data["awaiting_feedback"] = True
+            await update.message.reply_text(
+                "💬 <b>We'd Love Your Feedback!</b>\n\n"
+                "Have an idea for a new feature, found an issue, or want to share your experience with the tracker?\n\n"
+                "👉 <i>Simply reply or type your feedback below:</i>",
+                parse_mode=ParseMode.HTML,
+            )
     else:
         # Default: Process as food log
         await process_and_log_meal(update=update, text_prompt=text, image_bytes=None)
@@ -1808,6 +2708,9 @@ def main() -> None:
     app.add_handler(CommandHandler("edit", edit_command))
     app.add_handler(CommandHandler("undo", undo_command))
     app.add_handler(CommandHandler("log", log_command))
+    app.add_handler(CommandHandler("targets", targets_command))
+    app.add_handler(CommandHandler("goals", targets_command))
+    app.add_handler(CommandHandler("target", targets_command))
 
     # Data Governance & Compliance Commands
     app.add_handler(CommandHandler("export", export_command))
@@ -1815,9 +2718,16 @@ def main() -> None:
     app.add_handler(CommandHandler("delete", delete_command))
     app.add_handler(CommandHandler("reset", delete_command))
 
-    # Admin Broadcast Commands
+    # Admin Broadcast & Feedback Commands
     app.add_handler(CommandHandler("release", release_command))
     app.add_handler(CommandHandler("broadcast", broadcast_command))
+    app.add_handler(CommandHandler("feedback", feedback_command))
+    app.add_handler(CommandHandler("suggest", feedback_command))
+    app.add_handler(CommandHandler("viewfeedback", viewfeedback_command))
+    app.add_handler(CommandHandler("feedbacks", viewfeedback_command))
+    app.add_handler(CommandHandler("metrics", metrics_command))
+    app.add_handler(CommandHandler("admin", metrics_command))
+    app.add_handler(CommandHandler("platform", metrics_command))
 
     # Inline Keyboard Callbacks
     app.add_handler(CallbackQueryHandler(handle_callback_query))

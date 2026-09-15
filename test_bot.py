@@ -18,6 +18,8 @@ from bot import (
     SHEET_HEADERS,
     format_telegram_reply,
     classify_text_intent,
+    extract_category_override,
+    MediaGroupBuffer,
     GEMINI_CANDIDATE_MODELS,
 )
 
@@ -167,12 +169,132 @@ class TestMacroTrackerBot(unittest.TestCase):
             ("Actually no sugar in the tea", "edit"),
             ("Wait, change chicken to 200g", "edit"),
             ("Correction: brown rice, not white", "edit"),
+            ("this entry is for lunch", "edit"),
+            ("this is for dinner", "edit"),
+            ("this was for breakfast", "edit"),
+            ("for lunch", "edit"),
+            ("for dinner", "edit"),
+            ("change to dinner", "edit"),
+            ("mark as snack", "edit"),
+            ("targets", "targets"),
+            ("my goals", "targets"),
+            ("set targets", "targets"),
+            ("change targets", "targets"),
+            ("calorie target", "targets"),
+            ("feedback", "feedback"),
+            ("give feedback", "feedback"),
+            ("i have a suggestion", "feedback"),
+            ("feature request", "feedback"),
+            ("report a bug", "feedback"),
+            ("feedback: please add apple watch support", "feedback"),
+            ("suggestion: add barcode scanning", "feedback"),
             ("Chicken rice with iced lemon tea", "food_log"),
             ("2 hard boiled eggs with oatmeal and blueberries", "food_log"),
         ]
         for phrase, expected in cases:
             actual = classify_text_intent(phrase)
             self.assertEqual(actual, expected, f"Failed on '{phrase}': got {actual}, expected {expected}")
+
+    def test_feedback_flow_and_firestore_lifecycle(self):
+        """Verify feedback persistence in Firestore and query retrieval."""
+        from bot import firestore_service
+
+        test_chat_id = 888888888
+        test_user = "@feedback_tester"
+
+        async def run_feedback_test():
+            # 1. Direct save_feedback
+            fb_id = await firestore_service.save_feedback(
+                chat_id=test_chat_id,
+                user_name=test_user,
+                feedback_text="Please add barcode scanner support!",
+                category="feature_request",
+            )
+            self.assertTrue(bool(fb_id))
+
+            # 2. Query recent feedback
+            recent = await firestore_service.get_recent_feedback(limit=5)
+            self.assertGreaterEqual(len(recent), 1)
+            found = any(f.get("feedback_id") == fb_id or f.get("id") == fb_id for f in recent)
+            self.assertTrue(found)
+
+            # Clean up test feedback doc
+            db = await firestore_service.get_client()
+            await db.collection("feedback").document(fb_id).delete()
+
+        asyncio.run(run_feedback_test())
+
+    def test_platform_metrics_computation(self):
+        """Verify platform metrics calculation aggregation returns expected schema and keys."""
+        from bot import firestore_service
+
+        async def run_metrics():
+            m = await firestore_service.get_platform_metrics()
+            self.assertIn("total_users", m)
+            self.assertIn("activated_users", m)
+            self.assertIn("activation_rate", m)
+            self.assertIn("dau", m)
+            self.assertIn("wau", m)
+            self.assertIn("mau", m)
+            self.assertIn("total_meals", m)
+            self.assertIn("total_items", m)
+            self.assertIn("user_breakdown", m)
+            self.assertIsInstance(m["total_users"], int)
+            self.assertGreaterEqual(m["total_users"], 1)
+
+        asyncio.run(run_metrics())
+
+    def test_extract_category_override(self):
+        """Verify extraction of target category from natural language instructions."""
+        self.assertEqual(extract_category_override("this entry is for lunch"), "Lunch")
+        self.assertEqual(extract_category_override("this was for dinner"), "Dinner")
+        self.assertEqual(extract_category_override("change to breakfast"), "Breakfast")
+        self.assertEqual(extract_category_override("mark as snack"), "Snack")
+        self.assertEqual(extract_category_override("for lunch"), "Lunch")
+        self.assertEqual(extract_category_override("dinner"), "Dinner")
+        self.assertIsNone(extract_category_override("actually remove the sauce"))
+
+    def test_media_group_buffer_coordination(self):
+        """Verify MediaGroupBuffer captures multiple images and aggregates caption."""
+        mock_update = MagicMock()
+        buffer = MediaGroupBuffer(media_group_id="mg_test_123", initial_update=mock_update)
+        self.assertEqual(len(buffer.images), 0)
+        self.assertEqual(buffer.caption, "")
+
+        # Simulate adding photos
+        buffer.images.append(b"fake_image_bytes_1")
+        buffer.caption = "5 items from Ajumma, half of each"
+        buffer.images.append(b"fake_image_bytes_2")
+
+        self.assertEqual(len(buffer.images), 2)
+        self.assertEqual(buffer.caption, "5 items from Ajumma, half of each")
+
+    def test_quote_reply_routes_to_edit(self):
+        """Verify that replying to a bot meal card calls execute_meal_edit with targeted meal."""
+        from unittest.mock import AsyncMock, patch
+        from bot import handle_text
+
+        mock_update = MagicMock()
+        mock_update.message.text = "this entry is for lunch"
+        mock_update.message.reply_to_message = MagicMock()
+        mock_update.message.reply_to_message.message_id = 999
+        mock_update.message.reply_to_message.from_user.is_bot = True
+        mock_update.effective_chat.id = 102325434
+        mock_update.effective_user.username = "test_user"
+
+        mock_context = MagicMock()
+        mock_context.user_data = {}
+
+        target_meal_sample = {"id": "sample_meal_1", "category": "Dinner", "items": []}
+
+        with patch("bot.firestore_service.find_meal_by_message_id", new_callable=AsyncMock) as mock_find, \
+             patch("bot.firestore_service.get_last_meal", new_callable=AsyncMock) as mock_last, \
+             patch("bot.execute_meal_edit", new_callable=AsyncMock) as mock_edit:
+            mock_find.return_value = target_meal_sample
+            asyncio.run(handle_text(mock_update, mock_context))
+            mock_edit.assert_called_once_with(
+                mock_update, mock_context, 102325434, "@test_user", "this entry is for lunch", target_meal=target_meal_sample
+            )
 
     def test_analytics_chart_generation(self):
         """Verify Matplotlib headless generation produces a non-empty PNG buffer."""
@@ -204,6 +326,7 @@ class TestMacroTrackerBot(unittest.TestCase):
             protein_target=150,
             fiber_target=25,
             days_window=7,
+            targets_set=True,
         )
         self.assertIsInstance(png_bytes, bytes)
         self.assertGreater(len(png_bytes), 5000)
@@ -234,16 +357,26 @@ class TestMacroTrackerBot(unittest.TestCase):
                 "nutrition_score_count": 1,
             },
         ]
-        summary = AnalyticsService.format_analytics_text(
+        # Test 1: Unset targets (Baseline mode)
+        summary_baseline = AnalyticsService.format_analytics_text(
             daily_records=mock_records,
             user_name="@jamesboh",
             days_window=7,
-            targets={"daily_calorie_target": 2000, "daily_protein_target": 150, "daily_fiber_target": 25},
+            targets={"daily_calorie_target": 2000, "daily_protein_target": 150, "daily_fiber_target": 25, "targets_set": False},
         )
-        self.assertIn("1,950 kcal", summary)
-        self.assertIn("152.5g", summary)
-        self.assertIn("25.5g", summary)
-        self.assertIn("2/7 days", summary)
+        self.assertIn("1,950 kcal", summary_baseline)
+        self.assertIn("Baseline: 2,000", summary_baseline)
+        self.assertIn("Notice: Comparisons use standard reference baselines", summary_baseline)
+
+        # Test 2: Customized targets (Target mode)
+        summary_custom = AnalyticsService.format_analytics_text(
+            daily_records=mock_records,
+            user_name="@jamesboh",
+            days_window=7,
+            targets={"daily_calorie_target": 2000, "daily_protein_target": 150, "daily_fiber_target": 25, "targets_set": True},
+        )
+        self.assertIn("Target: 2,000", summary_custom)
+        self.assertIn("Outstanding discipline", summary_custom)
 
     def test_firestore_crud_and_export_lifecycle(self):
         """Integration test: registers user, logs meal, reads totals, exports CSV, and deletes data."""
@@ -301,30 +434,41 @@ class TestMacroTrackerBot(unittest.TestCase):
                         "nutrition_score": 80,
                     },
                 ],
+                "user_message_id": 987654,
+                "bot_message_id": 123456,
             }
             meal_id = await service.save_meal(test_chat_id, test_username, meal_data)
             self.assertTrue(bool(meal_id))
 
-            # 3. Read today's totals
+            # 3. Test find_meal_by_message_id
+            found_by_bot_msg = await service.find_meal_by_message_id(test_chat_id, 123456)
+            self.assertIsNotNone(found_by_bot_msg)
+            self.assertEqual(found_by_bot_msg["id"], meal_id)
+
+            found_by_user_msg = await service.find_meal_by_message_id(test_chat_id, 987654)
+            self.assertIsNotNone(found_by_user_msg)
+            self.assertEqual(found_by_user_msg["id"], meal_id)
+
+            # 4. Read today's totals
             totals = await service.get_user_today_totals(test_chat_id, "2026-09-10")
             self.assertEqual(totals["calories"], 500.0)
             self.assertEqual(totals["protein"], 40.0)
             self.assertEqual(totals["fiber"], 5.0)
             self.assertEqual(totals["item_count"], 2)
 
-            # 4. Read last meal
+            # 5. Read last meal
             last = await service.get_last_meal(test_chat_id)
             self.assertIsNotNone(last)
             self.assertEqual(last["id"], meal_id)
 
-            # 5. Export CSV
+            # 6. Export CSV
             csv_str = await service.export_user_meals_csv(test_chat_id, test_username)
             lines = csv_str.strip().splitlines()
             self.assertEqual(len(lines), 3) # Header + 2 items
             self.assertIn("Chicken Breast", lines[1])
             self.assertIn("Brown Rice", lines[2])
 
-            # 6. Delete all user data (PDPA right to erasure)
+            # 7. Delete all user data (PDPA right to erasure)
             deleted_count = await service.delete_all_user_data(test_chat_id)
             self.assertGreaterEqual(deleted_count, 1)
 

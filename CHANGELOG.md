@@ -5,6 +5,32 @@ All notable changes to the **James Boh Macro Tracker** will be documented in thi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.5] - 2026-09-15
+
+### Added
+- **Calorie & Macro Target Management (`/targets`, `/goals`)**: Interactive goal setup with 1-tap presets (`[ 📉 Fat Loss (1,700 kcal) ]`, `[ ⚖️ Maintenance (2,000 kcal) ]`, `[ 💪 Lean Bulk (2,400 kcal) ]`, `[ ✏️ Custom Targets ]`) or direct numerical parameters (`/targets 1800 140 25`).
+- **Baseline Mode vs. Custom Target Differentiation**: Added `targets_set` flag to user profiles. When unset, analytics charts and coaching digests clearly label lines and metrics as `Baseline` (e.g., `Baseline: 2,000 kcal`, `Protein (Baseline: 150g)`), eliminating uncalibrated critiques.
+- **Analytics Inline Target Button**: Direct `[ 🎯 Set Daily Targets ]` (or `[ 🎯 Edit Targets ]`) button rendered directly beneath weekly and monthly analytics cards.
+- **Natural Language Target Intent Routing**: Recognizes phrases like *"change targets"*, *"set goals"*, *"my targets"*, *"calorie target"*, routing straight to target configuration.
+- **User Feedback & Suggestions System (`/feedback`, `/suggest`)**: Built-in channel for users to submit ideas, bug reports, and feature requests. Supports one-shot commands, interactive prompts, and natural language triggers (*"i have a suggestion"*, *"report a bug"*, *"feedback: ..."*).
+- **Real-Time Admin Push Notifications**: Instant Telegram DM notifications pushed directly to the administrator (`@jamesjjboh`) the moment feedback is submitted.
+- **Admin Feedback Viewer (`/viewfeedback`, `/feedbacks`)**: On-demand inspection tool for administrators to browse recent feedback submissions in Telegram.
+- **Cloud Firestore Feedback Store**: Secure persistence under `feedback/{feedback_id}` tracking user ID, handle, text, category, and submission timestamp.
+- **Admin Analytics & Growth Dashboard (`/metrics`, `/admin`)**: Real-time platform command for administrators to monitor user growth (Total Users, New Signups), activation rate (users logging $\ge 1$ meal), engagement (DAU, WAU, MAU, DAU/MAU habit stickiness), total meal & item volume, and active user leaderboard.
+- **Continuous User Activity Tracking**: Lightweight non-blocking activity touchpoint updates `last_active_at` on every message or photo upload, ensuring 100% accurate DAU/WAU metrics.
+
+### Fixed
+- **Analytics Doughnut Chart Percentage Cut-Off**: Adjusted `pctdistance=0.76` and inner ring width to `0.42` in `AnalyticsService.generate_trend_chart` so percentages sit dead-center in the colored arcs. Swapped text color to high-contrast `#0f172a`, preventing digits from blending into dark backgrounds.
+
+---
+
+## [1.3.4] - 2026-09-14
+
+### Added
+- **Multi-Photo Album Debouncer (`MediaGroupBuffer`)**: Asynchronous buffer aggregates multiple photos sent in a single Telegram album and processes the entire spread collectively in one unified Gemini session, preventing duplicate entries and inflated calorie counts.
+- **Quote-Reply Historical Meal Editing (`find_meal_by_message_id`)**: Users can swipe/reply to ANY past meal photo or status card to modify ingredients or portions. Tracks `user_message_id` and `bot_message_id` in Firestore to accurately pinpoint and edit historical meals.
+- **Deterministic Category Overrides**: Automatically detects and extracts meal category modifications from natural language phrases (e.g. *"this entry is for lunch"*, *"change to dinner"*, *"mark as snack"*), updating both item and document category fields.
+
 ---
 
 ## [1.3.3] - 2026-09-11

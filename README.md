@@ -18,27 +18,39 @@ Effortlessly log daily calories, macros (Protein, Carbs, Fat, Fiber), and an int
 ### 2. Zero-Command Conversational Intent Router
 No need to memorize slash commands! The bot understands natural language directly:
 - **Food Logging**: *"Chicken rice with teh o kosong"*, *"2 boiled eggs and avocado toast"*
+- **Goals & Targets**: *"Change targets"*, *"Set goals"*, *"My daily targets"*
 - **Visual Analytics**: *"How did I do this week?"*, *"Show my monthly charts"*
-- **Smart Editing**: *"Actually no sugar in the tea"*, *"Wait, change chicken to 200g"*
+- **Smart Editing & Categories**: *"This entry is for lunch"*, *"Actually no sugar in the tea"*, *"Wait, change chicken to 200g"*
+- **User Feedback**: *"I have a suggestion"*, *"Report a bug"*, *"Feedback: add barcode scanner"*
 - **Undo**: *"Undo that"*, *"Delete my last meal"*
 - **Data Export**: *"Can I export my data?"*, *"Download my logs as CSV"*
 - **Privacy Inquiries**: *"Is my data private?"*, *"Where is my data stored?"*
 
-### 3. Visual Nutrition Analytics & Trend Cards
+### 3. Visual Nutrition Analytics & Target Management
 - 📊 **High-Res Dark-Mode Charts (`matplotlib`)**: Generates Telegram dark-mode dashboard cards directly in chat:
   - **Panel 1**: Daily Calories vs Target line (color-coded for on-track vs surplus).
-  - **Panel 2**: Macronutrient Energy Split Donut (% Protein, % Carbs, % Fat).
+  - **Panel 2**: Macronutrient Energy Split Donut (% Protein, % Carbs, % Fat) with centered, high-contrast labels.
   - **Panel 3**: Daily Protein & Dietary Fiber Intake Bars with recommended baseline lines.
+- 🎯 **Configurable Targets & Baseline Mode**: Set custom goals via `/targets` or 1-tap presets (Fat Loss, Maintenance, Lean Bulk, Custom). Unconfigured accounts cleanly show standard reference baselines (`Baseline: 2,000 kcal`) without uncalibrated critiques.
 - 💡 **Executive Coaching Digest**: Computes weekly averages, consistency score (% days on target), and actionable fat-loss / muscle retention coaching tips.
 
-### 4. Smart Meal Editing & Undo
-- ✏️ **Gemini Recalculation Engine**: Feed adjustments naturally (e.g., *"Ate only half the rice"* or *"Replace whole milk with oat milk"*). Gemini updates the exact itemized breakdown and recalculates today's totals atomically.
+### 4. Smart Meal Editing, Quote-Reply & Categorization
+- 💬 **Swipe / Quote-Reply Historical Editing**: Swipe to reply to **any** past meal or photo card in chat. The bot uses Firestore message-ID tracking to pinpoint and modify that exact meal.
+- 🏷️ **Natural Language Category Updates**: Reclassify meals instantly (e.g. *"This entry is for lunch"*, *"Change to dinner"*, *"Mark as snack"*).
+- ✏️ **Gemini Recalculation Engine**: Feed adjustments naturally (e.g. *"Ate only half the rice"* or *"Replace whole milk with oat milk"*). Gemini updates the exact itemized breakdown and recalculates today's totals atomically.
 - ↩️ **Instant Rollback (`/undo`)**: Quickly remove an accidental photo upload or duplicate entry with one tap.
 
 ### 5. Multi-Modal Vision & Composite Breakdown
-- 📸 **Photo Logging with Caption Override**: Snap a plate or beverage. Captions act as ground truth (e.g., *"Soy milk no sugar"*).
+- 📸 **Multi-Photo Album Coordination (`MediaGroupBuffer`)**: Upload 4–5 photos of a meal spread in a single message. The bot debounces the album and evaluates the entire spread as **one consolidated meal** with zero duplicate entries.
+- 📝 **Caption Ground Truth Override**: Snap a plate or beverage with a caption (e.g., *"5 items from Ajumma, half of each"*). Gemini prioritizes the caption over visual guesswork.
 - 🥣 **Itemized Breakdown**: Separates composite meals into distinct components with individual macro profiles.
 - 🥗 **Dietary Fiber & Nutrition Score (0–100)**: Evaluates protein-to-calorie density, dietary fiber, whole food quality, and satiety.
+
+### 6. In-App User Feedback & Suggestion System
+- 📬 **Multi-Channel Submissions**: Users can send feedback via `/feedback <text>`, `/suggest`, natural language (*"I have a suggestion"*, *"Report a bug"*), or the interactive `[ 💬 Send Feedback ]` button.
+- 🔔 **Instant Admin Push Alerts**: Every submission automatically triggers a real-time Telegram alert message directly to the administrator (`@jamesjjboh`), displaying user handle, time, category, and message text.
+- 📋 **Admin Feedback Viewer (`/viewfeedback`)**: Administrators can review the latest submissions on demand in Telegram.
+- 🗄️ **Persistent Firestore Collection**: Records are stored under `feedback/{feedback_id}` with status tracking.
 
 ---
 
@@ -47,12 +59,18 @@ No need to memorize slash commands! The bot understands natural language directl
 | Command | Natural Language Trigger | Description |
 | :--- | :--- | :--- |
 | **Send Photo** | _(Upload image)_ | Multimodal AI vision analysis with macro breakdown. |
+| **Send Album** | _(Upload multiple photos)_ | Evaluates entire multi-dish spread collectively as 1 meal without duplicates. |
+| **Reply to Meal** | *"This entry is for lunch"* | Pinpoints and updates the exact quoted meal (ingredients, portions, or category). |
 | **Send Text** | *"Chicken rice with iced tea"* | Zero-shot food parsing and automatic macro estimation. |
 | `/today` | *"What did I eat today?"* | Cumulative calorie, protein, carb, fat, and fiber totals for today. |
+| `/targets` / `/goals` | *"Change targets"*, *"My goals"* | Set or adjust daily targets with 1-tap presets (Fat Loss, Maintenance, Bulk, Custom). |
 | `/analytics` | *"How did I do this week?"* | 7-day dark-mode chart card, averages, and coaching digest. |
 | `/monthly` | *"Show my monthly charts"* | 30-day macro trend analysis and consistency score. |
 | `/edit` | *"Actually no sugar"* | Modify portion sizes or ingredients of your last logged meal. |
 | `/undo` | *"Undo that"* | Instantly deletes your most recently logged meal. |
+| `/feedback` / `/suggest` | *"I have a suggestion"*, *"Report a bug"* | Submit ideas, feature requests, or bug reports with real-time admin alerts. |
+| `/viewfeedback` | — | *(Admin Only)* Review the latest 10 user feedback submissions. |
+| `/metrics` / `/admin` | — | *(Admin Only)* Real-time platform metrics: total users, DAU/WAU/MAU, activation %, and logs. |
 | `/log <food>` | — | Explicit text logging fallback. |
 | `/export` | *"Download my data as CSV"* | Downloads your complete meal history as an 11-column CSV file. |
 | `/privacy` | *"Is my data private?"* | Full transparency on Singapore GCP storage and AI data handling. |
@@ -145,12 +163,17 @@ source .venv/bin/activate
 python -m unittest test_bot.py -v
 ```
 
-Tests cover:
-* Pydantic schema validation & score boundaries
-* Natural Language Intent Classifier
-* Headless dark-mode chart generation (valid PNG byte stream)
-* Coaching digest calculations & adherence metrics
-* Live Firestore CRUD, daily totals, CSV export, and deletion
+Tests cover (14 automated unit & integration tests):
+* Pydantic schema validation & score boundaries (0–100)
+* Conversational Intent Router (logging, editing, targets, feedback, analytics, export, privacy)
+* Platform metrics aggregation & active user engagement computation (DAU/WAU/MAU)
+* User feedback lifecycle and Cloud Firestore persistence (`save_feedback`, `get_recent_feedback`)
+* Multi-photo album coordination & caption aggregation (`MediaGroupBuffer`)
+* Quote-reply message-ID lookup & targeted historical meal editing
+* Deterministic category override extraction (`extract_category_override`)
+* Headless dark-mode chart generation & centered percentage rendering
+* Coaching digest calculations & baseline vs. custom target adherence
+* Live Cloud Firestore CRUD, message linking, daily totals, CSV export, and deletion
 
 ---
 
