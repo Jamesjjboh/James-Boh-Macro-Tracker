@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.3.5] - 2026-09-15
 
 ### Added
+- **Multi-Photo Album Uploads (Send Multiple Photos as One Meal)**: Select and send 2–5 photos simultaneously in a single Telegram message (e.g., multi-dish restaurant feasts, banchan, sides, drinks). The bot aggregates all images and evaluates them collectively in **one unified Gemini AI vision session**, recording the spread as **one single meal** with accurate calorie totals and zero duplicates.
 - **Calorie & Macro Target Management (`/targets`, `/goals`)**: Interactive goal setup with 1-tap presets (`[ 📉 Fat Loss (1,700 kcal) ]`, `[ ⚖️ Maintenance (2,000 kcal) ]`, `[ 💪 Lean Bulk (2,400 kcal) ]`, `[ ✏️ Custom Targets ]`) or direct numerical parameters (`/targets 1800 140 25`).
 - **Baseline Mode vs. Custom Target Differentiation**: Added `targets_set` flag to user profiles. When unset, analytics charts and coaching digests clearly label lines and metrics as `Baseline` (e.g., `Baseline: 2,000 kcal`, `Protein (Baseline: 150g)`), eliminating uncalibrated critiques.
 - **Analytics Inline Target Button**: Direct `[ 🎯 Set Daily Targets ]` (or `[ 🎯 Edit Targets ]`) button rendered directly beneath weekly and monthly analytics cards.
@@ -27,7 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.3.4] - 2026-09-14
 
 ### Added
-- **Multi-Photo Album Debouncer (`MediaGroupBuffer`)**: Asynchronous buffer aggregates multiple photos sent in a single Telegram album and processes the entire spread collectively in one unified Gemini session, preventing duplicate entries and inflated calorie counts.
+- **Multi-Photo Album Uploads (Send Multiple Photos as One Meal)**: Asynchronous album coordinator (`MediaGroupBuffer`) aggregates 2–5 photos sent simultaneously in a single Telegram message. Evaluates the entire multi-dish spread collectively in one unified Gemini vision session, eliminating duplicate entries and preventing inflated calorie counts.
 - **Quote-Reply Historical Meal Editing (`find_meal_by_message_id`)**: Users can swipe/reply to ANY past meal photo or status card to modify ingredients or portions. Tracks `user_message_id` and `bot_message_id` in Firestore to accurately pinpoint and edit historical meals.
 - **Deterministic Category Overrides**: Automatically detects and extracts meal category modifications from natural language phrases (e.g. *"this entry is for lunch"*, *"change to dinner"*, *"mark as snack"*), updating both item and document category fields.
 
