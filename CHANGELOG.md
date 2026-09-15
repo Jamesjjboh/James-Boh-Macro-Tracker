@@ -8,7 +8,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.3.5] - 2026-09-15
 
 ### Added
-- **Multi-Photo Album Uploads (Send Multiple Photos as One Meal)**: Select and send 2–5 photos simultaneously in a single Telegram message (e.g., multi-dish restaurant feasts, banchan, sides, drinks). The bot aggregates all images and evaluates them collectively in **one unified Gemini AI vision session**, recording the spread as **one single meal** with accurate calorie totals and zero duplicates.
 - **Calorie & Macro Target Management (`/targets`, `/goals`)**: Interactive goal setup with 1-tap presets (`[ 📉 Fat Loss (1,700 kcal) ]`, `[ ⚖️ Maintenance (2,000 kcal) ]`, `[ 💪 Lean Bulk (2,400 kcal) ]`, `[ ✏️ Custom Targets ]`) or direct numerical parameters (`/targets 1800 140 25`).
 - **Baseline Mode vs. Custom Target Differentiation**: Added `targets_set` flag to user profiles. When unset, analytics charts and coaching digests clearly label lines and metrics as `Baseline` (e.g., `Baseline: 2,000 kcal`, `Protein (Baseline: 150g)`), eliminating uncalibrated critiques.
 - **Analytics Inline Target Button**: Direct `[ 🎯 Set Daily Targets ]` (or `[ 🎯 Edit Targets ]`) button rendered directly beneath weekly and monthly analytics cards.
