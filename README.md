@@ -181,16 +181,20 @@ source .venv/bin/activate
 python -m unittest test_bot.py -v
 ```
 
-Tests cover (14 automated unit & integration tests):
+Tests cover (21 automated unit & integration tests):
 * Pydantic schema validation & score boundaries (0–100)
-* Conversational Intent Router (logging, editing, targets, feedback, analytics, export, privacy)
+* Conversational Intent Router (logging, editing, targets, feedback, analytics, historical date queries, analytical Q&A, export, privacy)
+* Conversational date parser (`parse_historical_date`) supporting relative dates, weekdays, and ISO formats
+* Historical date query detection (`is_date_lookup`) and single-day summary card generation (`format_specific_date_summary`)
+* Analytical Q&A intent detection (`is_analytics_qa`) for goal achievement, averages, and consistency queries
+* In-chat text-first visual dashboard with Unicode progress bars (`🟩🟩🟩⬜`, `🟨`, `🟧`, `⬜`) and daily adherence
+* Calorie-weighted nutrition & cut score aggregation across meals and days
 * Platform metrics aggregation & active user engagement computation (DAU/WAU/MAU)
 * User feedback lifecycle and Cloud Firestore persistence (`save_feedback`, `get_recent_feedback`)
 * Multi-photo album coordination & caption aggregation (`MediaGroupBuffer`)
 * Quote-reply message-ID lookup & targeted historical meal editing
 * Deterministic category override extraction (`extract_category_override`)
 * Headless dark-mode chart generation & centered percentage rendering
-* Coaching digest calculations & baseline vs. custom target adherence
 * Live Cloud Firestore CRUD, message linking, daily totals, CSV export, and deletion
 
 ---
