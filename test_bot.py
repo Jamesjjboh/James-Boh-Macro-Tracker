@@ -7,6 +7,7 @@ Firestore CRUD operations, CSV exports, and privacy workflows.
 import asyncio
 import os
 import unittest
+from datetime import date
 from unittest.mock import MagicMock
 
 from bot import (
@@ -23,6 +24,10 @@ from bot import (
     extract_category_override,
     MediaGroupBuffer,
     GEMINI_CANDIDATE_MODELS,
+    parse_historical_date,
+    is_date_lookup,
+    is_analytics_qa,
+    format_specific_date_summary,
 )
 
 
@@ -546,6 +551,103 @@ class TestMacroTrackerBot(unittest.TestCase):
         self.assertIn("gemini-3.6-flash", GEMINI_CANDIDATE_MODELS)
         self.assertIn("gemini-3.5-flash", GEMINI_CANDIDATE_MODELS)
         self.assertNotIn("gemini-3-flash-preview", GEMINI_CANDIDATE_MODELS)
+
+    def test_parse_historical_date(self):
+        """Verify conversational date parsing for yesterday, weekdays, and date formats."""
+        ref = date(2026, 10, 1)  # Thursday
+        self.assertEqual(parse_historical_date("yesterday", reference_date=ref), date(2026, 9, 30))
+        self.assertEqual(parse_historical_date("what did i eat yesterday?", reference_date=ref), date(2026, 9, 30))
+        self.assertEqual(parse_historical_date("3 days ago", reference_date=ref), date(2026, 9, 28))
+        self.assertEqual(parse_historical_date("show meals on 25 sep", reference_date=ref), date(2026, 9, 25))
+        self.assertEqual(parse_historical_date("25th september", reference_date=ref), date(2026, 9, 25))
+        self.assertEqual(parse_historical_date("september 25", reference_date=ref), date(2026, 9, 25))
+        self.assertEqual(parse_historical_date("2026-09-25", reference_date=ref), date(2026, 9, 25))
+        self.assertEqual(parse_historical_date("25/09", reference_date=ref), date(2026, 9, 25))
+        self.assertEqual(parse_historical_date("last friday", reference_date=ref), date(2026, 9, 25))
+        self.assertEqual(parse_historical_date("on wednesday", reference_date=ref), date(2026, 9, 30))
+
+    def test_historical_date_lookup_detection(self):
+        """Verify is_date_lookup identifies queries for past specific dates."""
+        ref = date(2026, 10, 1)
+        self.assertTrue(is_date_lookup("what did i eat yesterday", reference_date=ref))
+        self.assertTrue(is_date_lookup("show meals on 25 sep", reference_date=ref))
+        self.assertTrue(is_date_lookup("calories on 25 sep", reference_date=ref))
+        self.assertTrue(is_date_lookup("yesterday", reference_date=ref))
+        self.assertTrue(is_date_lookup("last friday", reference_date=ref))
+        self.assertTrue(is_date_lookup("25 sep", reference_date=ref))
+        self.assertTrue(is_date_lookup("2026-09-25", reference_date=ref))
+        self.assertFalse(is_date_lookup("chicken breast 200g with brown rice", reference_date=ref))
+        self.assertFalse(is_date_lookup("salmon salad and iced tea", reference_date=ref))
+
+    def test_analytics_qa_detection(self):
+        """Verify is_analytics_qa identifies analytical goal and performance questions."""
+        self.assertTrue(is_analytics_qa("did i hit my calorie goals for the past month?"))
+        self.assertTrue(is_analytics_qa("was i on track last week?"))
+        self.assertTrue(is_analytics_qa("how many days was i on target this week?"))
+        self.assertTrue(is_analytics_qa("what was my average protein last week?"))
+        self.assertTrue(is_analytics_qa("what was my highest calorie day?"))
+        self.assertTrue(is_analytics_qa("how is my adherence this month?"))
+        self.assertTrue(is_analytics_qa("did i meet my protein target?"))
+        self.assertFalse(is_analytics_qa("chicken rice with iced lemon tea"))
+        self.assertFalse(is_analytics_qa("salmon sashimi 100g"))
+
+    def test_format_specific_date_summary(self):
+        """Verify single-day historical meal summary formatting and calorie-weighted nutrition score."""
+        d = date(2026, 9, 25)
+        # Empty meals case
+        empty_text = format_specific_date_summary(d, [], "@jamesboh")
+        self.assertIn("Meals Logged on Friday, 25 Sep 2026", empty_text)
+        self.assertIn("No meals were logged on this date", empty_text)
+
+        # Logged meals case
+        meals = [
+            {
+                "category": "Lunch",
+                "time": "12:30 PM",
+                "items": [{"name": "Chicken Breast Salad"}],
+                "total_calories": 420.0,
+                "total_protein": 42.0,
+                "total_carbs": 15.0,
+                "total_fat": 12.0,
+                "total_fiber": 6.0,
+                "nutrition_score": 92,
+            },
+            {
+                "category": "Dinner",
+                "time": "7:15 PM",
+                "items": [{"name": "Grilled Salmon"}, {"name": "Asparagus"}],
+                "total_calories": 540.0,
+                "total_protein": 45.0,
+                "total_carbs": 10.0,
+                "total_fat": 24.0,
+                "total_fiber": 5.0,
+                "nutrition_score": 88,
+            }
+        ]
+        targets = {"targets_set": True, "daily_calorie_target": 2000, "daily_protein_target": 150, "daily_fiber_target": 25}
+        summary = format_specific_date_summary(d, meals, "@jamesboh", targets)
+        self.assertIn("Meals Logged on Friday, 25 Sep 2026", summary)
+        self.assertIn("Lunch", summary)
+        self.assertIn("Chicken Breast Salad", summary)
+        self.assertIn("Dinner", summary)
+        self.assertIn("Grilled Salmon, Asparagus", summary)
+        self.assertIn("960 kcal", summary)
+        self.assertIn("87.0 g", summary)
+        self.assertIn("11.0 g", summary)
+        self.assertIn("90/100", summary)
+
+    def test_format_analytics_text_with_progress_bar(self):
+        """Verify that format_analytics_text includes the day-by-day Unicode progress bar tracker."""
+        records = [
+            {"date": "2026-09-25", "calories": 1920.0, "protein": 148.0, "carbs": 160.0, "fat": 50.0, "fiber": 24.0, "nutrition_score_sum": 88, "nutrition_score_count": 1},
+            {"date": "2026-09-26", "calories": 2150.0, "protein": 155.0, "carbs": 190.0, "fat": 62.0, "fiber": 26.0, "nutrition_score_sum": 82, "nutrition_score_count": 1},
+            {"date": "2026-09-27", "calories": 1800.0, "protein": 140.0, "carbs": 140.0, "fat": 48.0, "fiber": 22.0, "nutrition_score_sum": 90, "nutrition_score_count": 1},
+        ]
+        targets = {"targets_set": True, "daily_calorie_target": 2000, "daily_protein_target": 150, "daily_fiber_target": 25}
+        text = AnalyticsService.format_analytics_text(records, "@jamesboh", days_window=7, targets=targets)
+        self.assertIn("Day-by-Day Calorie Tracker", text)
+        self.assertIn("🟩", text)
+        self.assertIn("Coach Analysis", text)
 
 
 if __name__ == "__main__":

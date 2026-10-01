@@ -5,6 +5,16 @@ All notable changes to the **James Boh Macro Tracker** will be documented in thi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.7] - 2026-10-01
+
+### Added
+- **Instant Text-First Analytics Dashboards (< 400ms)**: Replaced slow image-generation bottlenecks with zero-latency in-chat visual dashboards. Displays daily averages, adherence %, personalized coach feedback, and an interactive **Day-by-Day Calorie Tracker** using clean Unicode progress bars (`🟩🟩🟩⬜`, `🟨`, `🟧`, `⬜`).
+- **On-Demand High-Res Chart Generation**: Users can tap `[ 🖼️ View High-Res Chart ]` to generate and deliver the full dark-mode 3-panel Matplotlib PNG chart whenever they specifically want the visual graphic.
+- **Conversational Historical Date Lookups**: Users can inspect any past day naturally (e.g. *"What did I eat yesterday?"*, *"Show meals on 25 Sep"*, *"Calories last Friday"*, `2026-09-25`). Returns a consolidated single-day meal card with itemized items, categories, times, cumulative macros, and a calorie-weighted nutrition quality badge.
+- **Conversational Analytical Q&A Agent**: Users can ask natural analytical questions about their past eating habits and goal progress (e.g. *"Did I hit my calorie goals for the past month?"*, *"How many days was I on target this week?"*, *"What was my average protein last week?"*). Gemini 3.6 Flash analyzes verified Firestore historical records to cite exact percentages, days on target, and actionable coaching insights.
+
+---
+
 ## [1.3.6] - 2026-10-01
 
 ### Added

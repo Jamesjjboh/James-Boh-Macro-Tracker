@@ -12,12 +12,13 @@ Features:
 import asyncio
 from collections import defaultdict
 import csv
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 import html
 import io
 import json
 import logging
 import os
+import re
 import sys
 import time
 from typing import Dict, List, Optional, Tuple
@@ -475,6 +476,19 @@ class FirestoreService:
         else:
             totals["nutrition_score"] = None
         return totals
+
+    async def get_user_meals_for_date(self, chat_id: int, date_str: str) -> List[dict]:
+        """Fetches all meal documents logged by a user for a specific date (YYYY-MM-DD)."""
+        db = await self.get_client()
+        meals_ref = db.collection("users").document(str(chat_id)).collection("meals")
+        query = meals_ref.where(filter=FieldFilter("date", "==", date_str))
+        meals = []
+        async for doc in query.stream():
+            m = doc.to_dict()
+            m["id"] = doc.id
+            meals.append(m)
+        meals.sort(key=lambda x: x.get("time", ""))
+        return meals
 
     async def get_user_date_range_records(
         self,
@@ -1070,8 +1084,37 @@ class AnalyticsService:
             f"🥑 <b>Fat:</b> {avg_fat:.1f}g",
             f"⭐ <b>Average Nutrition Score:</b> {avg_score:.0f}/100",
             "",
-            "💡 <b>Coach Analysis:</b>",
+            "──────── <b>Day-by-Day Calorie Tracker</b> ────────",
         ]
+
+        today = datetime.now(LOCAL_TZ).date()
+        date_list = [today - timedelta(days=i) for i in reversed(range(days_window))]
+        tracker_dates = date_list[-7:] if days_window > 7 else date_list
+        record_map = {r["date"]: r for r in daily_records}
+
+        for d in tracker_dates:
+            d_str = d.strftime("%Y-%m-%d")
+            d_label = d.strftime("%a %d/%m")
+            rec = record_map.get(d_str)
+            cals = rec.get("calories", 0.0) if rec else 0.0
+            if cals <= 0:
+                lines.append(f"{d_label}: <i>No meals</i> ⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜")
+            else:
+                ratio = cals / cal_target
+                if ratio <= 1.08:
+                    filled = min(10, max(1, round(ratio * 10)))
+                    bar = ("🟩" * filled) + ("⬜" * (10 - filled))
+                    status = "On target" if ratio >= 0.85 else f"-{int(cal_target - cals)} kcal"
+                elif ratio <= 1.25:
+                    bar = "🟨" * 10
+                    status = f"+{int(cals - cal_target)} kcal"
+                else:
+                    bar = "🟧" * 10
+                    status = f"+{int(cals - cal_target)} kcal"
+                lines.append(f"{d_label}: <b>{cals:,.0f} kcal</b> {bar} <i>({status})</i>")
+
+        lines.append("")
+        lines.append("💡 <b>Coach Analysis:</b>")
 
         if not targets_set:
             lines.append("🎯 <i>Notice: Comparisons use standard reference baselines (2,000 kcal / 150g protein). To set your personal goals, tap 'Set Daily Targets' below or type /targets!</i>")
@@ -1256,6 +1299,336 @@ async def edit_meal_with_gemini(
     raise ValueError("Failed to modify meal with Gemini.")
 
 
+async def answer_analytics_qa_with_gemini(
+    user_question: str,
+    context_data: str,
+    user_name: str,
+) -> str:
+    """Answers analytical nutrition questions using verified historical data context."""
+    client = get_gemini_client()
+    system_prompt = (
+        "You are an elite, encouraging sports nutritionist and data analyst for the user's Macro Tracker bot.\n"
+        "You are answering questions about the user's past eating history, consistency, and goal progress.\n"
+        "RULES:\n"
+        "1. Answer using ONLY the provided verified daily nutrition records and targets.\n"
+        "2. Provide exact numbers, averages, percentages, and dates from the data.\n"
+        "3. Format response in clean Telegram HTML format (use <b>, <i>, <code>). Do NOT use markdown asterisks (* or **).\n"
+        "4. Keep the answer concise (2-4 short paragraphs max), direct, motivating, and actionable.\n"
+        "5. If the user asks about hitting goals, calculate their exact adherence % (days on target / days logged) and highlight strengths."
+    )
+    prompt = (
+        f"USER: {user_name}\n\n"
+        f"VERIFIED HISTORICAL DATA & TARGETS:\n{context_data}\n\n"
+        f"USER'S QUESTION:\n\"{user_question}\""
+    )
+    contents = [system_prompt, prompt]
+    config = types.GenerateContentConfig(
+        temperature=0.2,
+    )
+    last_error = None
+    for model_name in GEMINI_CANDIDATE_MODELS:
+        try:
+            response = await asyncio.wait_for(
+                client.aio.models.generate_content(
+                    model=model_name,
+                    contents=contents,
+                    config=config,
+                ),
+                timeout=15.0,
+            )
+            if response.text:
+                return response.text.strip()
+        except Exception as e:
+            logger.warning(f"Model {model_name} failed during analytics QA: {e}. Trying fallback...")
+            last_error = e
+            await asyncio.sleep(0.3)
+            continue
+
+    if last_error:
+        raise last_error
+    raise ValueError("Failed to answer analytical query with Gemini.")
+
+
+# =====================================================================
+# Historical Date Parsing & Analytics Helpers
+# =====================================================================
+MONTH_NAMES = {
+    "jan": 1, "january": 1,
+    "feb": 2, "february": 2,
+    "mar": 3, "march": 3,
+    "apr": 4, "april": 4,
+    "may": 5,
+    "jun": 6, "june": 6,
+    "jul": 7, "july": 7,
+    "aug": 8, "august": 8,
+    "sep": 9, "sept": 9, "september": 9,
+    "oct": 10, "october": 10,
+    "nov": 11, "november": 11,
+    "dec": 12, "december": 12,
+}
+
+WEEKDAYS = {
+    "monday": 0, "mon": 0,
+    "tuesday": 1, "tue": 1, "tues": 1,
+    "wednesday": 2, "wed": 2,
+    "thursday": 3, "thu": 3, "thur": 3, "thurs": 3,
+    "friday": 4, "fri": 4,
+    "saturday": 5, "sat": 5,
+    "sunday": 6, "sun": 6,
+}
+
+
+def parse_historical_date(text: str, reference_date: Optional[date] = None) -> Optional[date]:
+    """Parses natural language date references relative to Singapore local time."""
+    if reference_date is None:
+        reference_date = datetime.now(LOCAL_TZ).date()
+    t = text.strip().lower()
+
+    if "yesterday" in t:
+        return reference_date - timedelta(days=1)
+
+    ago_m = re.search(r"\b(\d+)\s+days?\s+ago\b", t)
+    if ago_m:
+        return reference_date - timedelta(days=int(ago_m.group(1)))
+
+    # ISO Format: YYYY-MM-DD
+    iso_m = re.search(r"\b(20\d\d)-(\d{1,2})-(\d{1,2})\b", t)
+    if iso_m:
+        try:
+            return date(int(iso_m.group(1)), int(iso_m.group(2)), int(iso_m.group(3)))
+        except ValueError:
+            pass
+
+    # DD/MM/YYYY or DD/MM
+    slash_m = re.search(r"\b(\d{1,2})/(\d{1,2})(?:/(20\d\d))?\b", t)
+    if slash_m:
+        d = int(slash_m.group(1))
+        m = int(slash_m.group(2))
+        y = int(slash_m.group(3)) if slash_m.group(3) else reference_date.year
+        try:
+            res = date(y, m, d)
+            if not slash_m.group(3) and res > reference_date:
+                res = date(y - 1, m, d)
+            return res
+        except ValueError:
+            pass
+
+    # 25 Sep or 25th September
+    d_m_pattern = re.search(r"\b(\d{1,2})(?:st|nd|rd|th)?\s+([a-zA-Z]+)(?:\s+(20\d\d))?\b", t)
+    if d_m_pattern:
+        d = int(d_m_pattern.group(1))
+        mon_str = d_m_pattern.group(2)
+        if mon_str in MONTH_NAMES:
+            m = MONTH_NAMES[mon_str]
+            y = int(d_m_pattern.group(3)) if d_m_pattern.group(3) else reference_date.year
+            try:
+                res = date(y, m, d)
+                if not d_m_pattern.group(3) and res > reference_date:
+                    res = date(y - 1, m, d)
+                return res
+            except ValueError:
+                pass
+
+    # September 25 or Sep 25th
+    m_d_pattern = re.search(r"\b([a-zA-Z]+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s+(20\d\d))?\b", t)
+    if m_d_pattern:
+        mon_str = m_d_pattern.group(1)
+        d = int(m_d_pattern.group(2))
+        if mon_str in MONTH_NAMES:
+            m = MONTH_NAMES[mon_str]
+            y = int(m_d_pattern.group(3)) if m_d_pattern.group(3) else reference_date.year
+            try:
+                res = date(y, m, d)
+                if not m_d_pattern.group(3) and res > reference_date:
+                    res = date(y - 1, m, d)
+                return res
+            except ValueError:
+                pass
+
+    # Weekdays: 'last friday', 'on friday', 'friday'
+    for name, wd in WEEKDAYS.items():
+        if re.search(rf"\b(last|on|this)?\s*{name}\b", t):
+            today_wd = reference_date.weekday()
+            delta = (today_wd - wd) % 7
+            if delta == 0:
+                delta = 7
+            return reference_date - timedelta(days=delta)
+
+    return None
+
+
+def is_date_lookup(text: str, reference_date: Optional[date] = None) -> bool:
+    """Determines whether a message is requesting past meals for a specific date."""
+    parsed = parse_historical_date(text, reference_date)
+    if not parsed:
+        return False
+    t = text.strip().lower()
+
+    # Direct date words
+    if t in ["yesterday", "yesterday meals", "yesterday summary", "yesterday intake", "yesterday calories"]:
+        return True
+
+    clean = re.sub(r"^(on|show|show me|view|get|see)\s+", "", t).strip()
+    if clean in ["yesterday", "last friday", "last monday", "last tuesday", "last wednesday", "last thursday", "last saturday", "last sunday"]:
+        return True
+    if re.fullmatch(r"\b\d{1,2}(?:st|nd|rd|th)?\s+[a-zA-Z]+(?:\s+\d{4})?\b", clean):
+        return True
+    if re.fullmatch(r"\b[a-zA-Z]+\s+\d{1,2}(?:st|nd|rd|th)?(?:\s+\d{4})?\b", clean):
+        return True
+    if re.fullmatch(r"\b\d{4}-\d{1,2}-\d{1,2}\b", clean) or re.fullmatch(r"\b\d{1,2}/\d{1,2}(?:/\d{4})?\b", clean):
+        return True
+
+    lookup_keywords = [
+        "what did i eat", "what i ate", "what was my intake", "what did i have",
+        "meals on", "food on", "calories on", "intake on", "summary on", "log on",
+        "logs on", "history on", "show meals", "show meal", "show food", "show intake",
+        "show log", "show logs", "show date", "show me meals", "show me what i ate",
+        "how many calories on", "did i eat anything on", "how much did i eat on",
+        "meals yesterday", "calories yesterday", "intake yesterday"
+    ]
+    return any(k in t for k in lookup_keywords)
+
+
+def is_analytics_qa(text: str) -> bool:
+    """Determines whether a message is asking an analytical question about past nutrition data."""
+    t = text.strip().lower()
+
+    qa_starters = [
+        "did i hit", "did i reach", "did i meet", "have i hit", "have i reached",
+        "was i on track", "am i on track", "was i on target", "am i on target",
+        "how many days", "how often", "what was my average", "what is my average",
+        "highest calorie", "lowest calorie", "best day", "worst day",
+        "most protein", "least protein", "did i achieve", "did i exceed",
+        "how was my diet", "how were my macros",
+        "how is my adherence", "how was my adherence", "calorie goal", "calorie target"
+    ]
+    if any(k in t for k in qa_starters):
+        return True
+
+    has_metric_or_eval = any(k in t for k in [
+        "goal", "goals", "target", "targets", "adherence", "average", "avg",
+        "track", "on track", "discipline", "deficit", "surplus"
+    ])
+    has_timeframe = any(k in t for k in [
+        "past month", "this month", "last month", "past week", "this week",
+        "last week", "past 7 days", "past 30 days", "30 days", "7 days"
+    ])
+    has_query_intent = any(k in t for k in ["did i", "was i", "how", "what", "check", "evaluate", "analyze"])
+
+    if has_metric_or_eval and (has_timeframe or has_query_intent):
+        return True
+
+    return False
+
+
+def format_specific_date_summary(
+    date_obj: date,
+    meals: List[dict],
+    user_name: str,
+    targets: Optional[dict] = None,
+) -> str:
+    """Formats a single-day historical meal summary with item breakdown and cumulative totals."""
+    targets = targets or {}
+    targets_set = bool(targets.get("targets_set", False))
+    cal_target = targets.get("daily_calorie_target", 2000)
+    pro_target = targets.get("daily_protein_target", 150)
+    fib_target = targets.get("daily_fiber_target", 25)
+
+    date_str_formatted = date_obj.strftime("%A, %d %b %Y")
+    header = (
+        f"📅 <b>Meals Logged on {date_str_formatted}</b>\n"
+        f"👤 <b>User:</b> {html.escape(user_name)}\n"
+    )
+
+    if not meals:
+        return (
+            header + "\n"
+            "<i>No meals were logged on this date.</i>\n\n"
+            "💡 <i>Tip: Snap a photo or type what you ate to log your meals for today!</i>"
+        )
+
+    lines = [header]
+    cat_emojis = {
+        "breakfast": "🍳",
+        "lunch": "🥣",
+        "dinner": "🥩",
+        "snack": "🥪",
+        "drink": "☕",
+    }
+
+    tot_cals = 0.0
+    tot_pro = 0.0
+    tot_carbs = 0.0
+    tot_fat = 0.0
+    tot_fiber = 0.0
+    weighted_score_sum = 0.0
+    score_sum = 0.0
+    score_count = 0
+
+    for idx, m in enumerate(meals, start=1):
+        cat = m.get("category", "Meal")
+        emoji = cat_emojis.get(cat.lower(), "🍽️")
+        cals = float(m.get("total_calories", 0.0))
+        pro = float(m.get("total_protein", 0.0))
+        carbs = float(m.get("total_carbs", 0.0))
+        fat = float(m.get("total_fat", 0.0))
+        fiber = float(m.get("total_fiber", 0.0))
+        time_str = m.get("time", "")
+
+        tot_cals += cals
+        tot_pro += pro
+        tot_carbs += carbs
+        tot_fat += fat
+        tot_fiber += fiber
+
+        score = m.get("nutrition_score")
+        if score is not None:
+            score_val = float(score)
+            weighted_score_sum += cals * score_val
+            score_sum += score_val
+            score_count += 1
+
+        items = m.get("items", [])
+        if items:
+            item_desc = ", ".join(it.get("name", "Item") for it in items)
+        else:
+            item_desc = "Meal Entry"
+
+        time_part = f" ({time_str})" if time_str else ""
+        lines.append(
+            f"{idx}. {emoji} <b>{cat}</b>{time_part}: {html.escape(item_desc)}\n"
+            f"   └ <b>{cals:,.0f} kcal</b> | 🥩 {pro:.1f}g | 🍞 {carbs:.1f}g | 🥑 {fat:.1f}g"
+        )
+
+    # Calculate day nutrition score
+    if tot_cals > 0 and weighted_score_sum > 0:
+        day_score = round(weighted_score_sum / tot_cals)
+    elif score_count > 0:
+        day_score = round(score_sum / score_count)
+    else:
+        day_score = None
+
+    lines.append("")
+    lines.append("──────── <b>Day Cumulative Totals</b> ────────")
+    cal_lbl = f" / {int(cal_target)}" if targets_set else ""
+    pro_lbl = f" / {int(pro_target)}g" if targets_set else ""
+    fib_lbl = f" / {int(fib_target)}g" if targets_set else ""
+    lines.append(f"🔥 <b>Calories:</b> {tot_cals:,.0f} kcal{cal_lbl}")
+    lines.append(f"🥩 <b>Protein:</b> {tot_pro:.1f} g{pro_lbl}")
+    lines.append(f"🍞 <b>Carbs:</b> {tot_carbs:.1f} g | 🥑 <b>Fat:</b> {tot_fat:.1f} g | 🌾 <b>Fiber:</b> {tot_fiber:.1f} g{fib_lbl}")
+
+    if day_score is not None:
+        if day_score >= 80:
+            badge = "🟢 <b>Excellent Quality & Cut Score:</b>"
+        elif day_score >= 60:
+            badge = "🟡 <b>Balanced Quality & Cut Score:</b>"
+        else:
+            badge = "🟠 <b>Moderate Quality & Cut Score:</b>"
+        lines.append(f"{badge} {day_score}/100")
+
+    return "\n".join(lines)
+
+
 # =====================================================================
 # Natural Language Intent Classification & User Helpers
 # =====================================================================
@@ -1289,29 +1662,17 @@ def classify_text_intent(text: str) -> str:
     if any(k in t for k in ["delete my account", "wipe my data", "wipe all my data", "clear my history", "delete all my data", "reset my account", "delete everything"]):
         return "delete"
 
-    # 5. Analytics & Trends
-    analytics_keywords = [
-        "analytics", "trend", "trends", "weekly", "monthly", "how did i do",
-        "show me my week", "show my progress", "stats", "charts", "chart",
-        "my intake this week", "summary for this week", "progress report",
-        "macro breakdown for the week", "macro trend"
-    ]
-    if any(k in t for k in analytics_keywords):
-        if "month" in t or "30 day" in t or "30-day" in t:
-            return "analytics_30d"
-        return "analytics_7d"
-
-    # 6. Targets & Goals
-    target_phrases = [
+    # 5. Targets & Goals Configuration
+    target_commands = [
         "targets", "goals", "my targets", "my goals", "set targets",
-        "set goals", "change targets", "change goals", "calorie target",
-        "protein target", "target calories", "target protein", "edit targets",
-        "show targets", "what are my targets", "view targets", "my daily targets"
+        "set goals", "change targets", "change goals", "edit targets",
+        "show targets", "what are my targets", "view targets", "my daily targets",
+        "check targets", "calorie target", "protein target", "target calories", "target protein",
     ]
-    if t in target_phrases or any(k in t for k in ["set targets", "change targets", "my targets", "calorie target", "protein target", "targets", "goals"]):
+    if t in target_commands or t.startswith(("set target", "set goal", "change target", "change goal", "edit target")):
         return "targets"
 
-    # 7. Meal Editing / Corrections / Category Updates
+    # 6. Meal Editing / Corrections / Category Updates
     edit_prefixes = (
         "actually", "wait", "edit", "update", "correction", "change",
         "instead of", "i meant", "remove the", "no sugar", "make that",
@@ -1337,7 +1698,7 @@ def classify_text_intent(text: str) -> str:
     ):
         return "edit"
 
-    # 8. User Feedback & Suggestions
+    # 7. User Feedback & Suggestions
     feedback_prefixes = ("feedback:", "feedback -", "feedback ", "suggest:", "suggestion:", "bug:", "bug report:")
     feedback_phrases = [
         "feedback", "give feedback", "send feedback", "submit feedback",
@@ -1353,7 +1714,27 @@ def classify_text_intent(text: str) -> str:
     ):
         return "feedback"
 
-    # 9. Food Logging
+    # 8. Conversational Analytical Q&A (e.g. 'did i hit my calorie goals for the past month?')
+    if is_analytics_qa(t):
+        return "analytics_qa"
+
+    # 9. Historical Specific Date Lookup (e.g. 'what did i eat yesterday?', '25 sep')
+    if is_date_lookup(t):
+        return "date_query"
+
+    # 10. Direct Analytics Digest Shortcuts (e.g. 'weekly', 'monthly', 'trends')
+    analytics_keywords = [
+        "analytics", "trend", "trends", "weekly", "monthly", "how did i do",
+        "show me my week", "show my progress", "stats", "charts", "chart",
+        "my intake this week", "summary for this week", "progress report",
+        "macro breakdown for the week", "macro trend"
+    ]
+    if any(k in t for k in analytics_keywords):
+        if "month" in t or "30 day" in t or "30-day" in t:
+            return "analytics_30d"
+        return "analytics_7d"
+
+    # 11. Food Logging (Default)
     return "food_log"
 
 
@@ -1624,8 +2005,9 @@ async def send_analytics_report(
     context: ContextTypes.DEFAULT_TYPE,
     days_window: int = 7,
     reply_to_message_id: Optional[int] = None,
+    generate_image: bool = False,
 ) -> None:
-    """Generates and delivers dark-mode chart card and coaching summary."""
+    """Delivers fast text-first analytics digest with on-demand high-res chart buttons."""
     now = datetime.now(LOCAL_TZ).date()
     start_date = (now - timedelta(days=days_window - 1)).strftime("%Y-%m-%d")
     end_date = now.strftime("%Y-%m-%d")
@@ -1645,18 +2027,22 @@ async def send_analytics_report(
     )
 
     btn_target_label = "🎯 Edit Targets" if targets_set else "🎯 Set Daily Targets"
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("📊 7 Days", callback_data="analytics_7d"),
-            InlineKeyboardButton("🗓️ 30 Days", callback_data="analytics_30d"),
-        ],
-        [
-            InlineKeyboardButton(btn_target_label, callback_data="menu_targets"),
-        ]
-    ])
+    btn_other_window = "🗓️ 30 Days" if days_window == 7 else "📊 7 Days"
+    btn_other_callback = "analytics_30d" if days_window == 7 else "analytics_7d"
 
     has_data = any(r.get("calories", 0) > 0 for r in records)
+    keyboard_buttons = []
     if has_data:
+        keyboard_buttons.append([
+            InlineKeyboardButton("🖼️ View High-Res Chart", callback_data=f"chart_{days_window}d"),
+        ])
+    keyboard_buttons.append([
+        InlineKeyboardButton(btn_other_window, callback_data=btn_other_callback),
+        InlineKeyboardButton(btn_target_label, callback_data="menu_targets"),
+    ])
+    keyboard = InlineKeyboardMarkup(keyboard_buttons)
+
+    if generate_image and has_data:
         chart_bytes = await asyncio.to_thread(
             AnalyticsService.generate_trend_chart,
             daily_records=records,
@@ -1684,41 +2070,85 @@ async def send_analytics_report(
         )
 
 
+async def send_analytics_chart(
+    chat_id: int,
+    user_name: str,
+    context: ContextTypes.DEFAULT_TYPE,
+    days_window: int = 7,
+    reply_to_message_id: Optional[int] = None,
+) -> None:
+    """Generates and delivers dark-mode 3-panel Matplotlib chart photo on-demand."""
+    now = datetime.now(LOCAL_TZ).date()
+    start_date = (now - timedelta(days=days_window - 1)).strftime("%Y-%m-%d")
+    end_date = now.strftime("%Y-%m-%d")
+
+    records = await firestore_service.get_user_date_range_records(chat_id, start_date, end_date)
+    profile = await firestore_service.get_user_profile(chat_id)
+    cal_target = profile.get("daily_calorie_target", 2000)
+    pro_target = profile.get("daily_protein_target", 150)
+    fib_target = profile.get("daily_fiber_target", 25)
+    targets_set = profile.get("targets_set", False)
+
+    has_data = any(r.get("calories", 0) > 0 for r in records)
+    if not has_data:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"ℹ️ <b>No meal data found in the past {days_window} days to chart.</b>",
+            parse_mode=ParseMode.HTML,
+            reply_to_message_id=reply_to_message_id,
+        )
+        return
+
+    chart_bytes = await asyncio.to_thread(
+        AnalyticsService.generate_trend_chart,
+        daily_records=records,
+        calorie_target=cal_target,
+        protein_target=pro_target,
+        fiber_target=fib_target,
+        days_window=days_window,
+        targets_set=targets_set,
+    )
+    caption = f"📈 <b>{days_window}-Day High-Resolution Trend Chart</b>\n👤 <b>User:</b> {html.escape(user_name)}"
+    await context.bot.send_photo(
+        chat_id=chat_id,
+        photo=chart_bytes,
+        caption=caption,
+        parse_mode=ParseMode.HTML,
+        reply_to_message_id=reply_to_message_id,
+    )
+
+
 async def analytics_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles /analytics command (defaults to 7 days)."""
+    """Handles /analytics command (defaults to 7-day instant text digest)."""
     if not is_user_authorized(update):
         await update.message.reply_text("⛔ You are not authorized to use this bot.")
         return
     user_name = get_user_display_name(update)
     chat_id = update.effective_chat.id
-    status_msg = await update.message.reply_text("📈 <i>Generating nutrition analytics...</i>", parse_mode=ParseMode.HTML)
     try:
         await send_analytics_report(chat_id, user_name, context, days_window=7)
-        await status_msg.delete()
     except Exception as e:
         logger.error(f"Analytics generation failed: {e}", exc_info=True)
-        await status_msg.edit_text(f"❌ Failed to generate analytics: {html.escape(str(e))}")
+        await update.message.reply_text(f"❌ Failed to generate analytics: {html.escape(str(e))}")
 
 
 async def weekly_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles /weekly shortcut."""
+    """Handles /weekly shortcut (7-day instant text digest)."""
     await analytics_command(update, context)
 
 
 async def monthly_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles /monthly shortcut (30 days)."""
+    """Handles /monthly shortcut (30-day instant text digest)."""
     if not is_user_authorized(update):
         await update.message.reply_text("⛔ You are not authorized to use this bot.")
         return
     user_name = get_user_display_name(update)
     chat_id = update.effective_chat.id
-    status_msg = await update.message.reply_text("📈 <i>Generating 30-day analytics...</i>", parse_mode=ParseMode.HTML)
     try:
         await send_analytics_report(chat_id, user_name, context, days_window=30)
-        await status_msg.delete()
     except Exception as e:
         logger.error(f"Monthly analytics failed: {e}", exc_info=True)
-        await status_msg.edit_text(f"❌ Failed to generate analytics: {html.escape(str(e))}")
+        await update.message.reply_text(f"❌ Failed to generate analytics: {html.escape(str(e))}")
 
 
 async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2306,6 +2736,20 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         await send_analytics_report(chat_id, user_name, context, days_window=7)
     elif data == "analytics_30d":
         await send_analytics_report(chat_id, user_name, context, days_window=30)
+    elif data.startswith("chart_"):
+        days = 30 if "30" in data else 7
+        status_msg = await query.message.reply_text(
+            f"🎨 <i>Rendering {days}-day high-resolution trend chart...</i>",
+            parse_mode=ParseMode.HTML,
+        )
+        try:
+            await send_analytics_chart(chat_id, user_name, context, days_window=days)
+            await status_msg.delete()
+        except Exception as e:
+            logger.error(f"Error rendering chart: {e}", exc_info=True)
+            await status_msg.edit_text(f"❌ Failed to render chart: {html.escape(str(e))}")
+    elif data == "today_summary":
+        await today_command(update, context)
     elif data == "confirm_delete":
         deleted = await firestore_service.delete_all_user_data(chat_id)
         await query.edit_message_text(
@@ -2603,6 +3047,161 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
 
+async def handle_specific_date_query(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    user_name: str,
+    text: str,
+) -> None:
+    """Handles single-date meal history lookups (e.g. 'What did I eat yesterday?', '25 Sep')."""
+    target_date = parse_historical_date(text)
+    if not target_date:
+        await update.message.reply_text(
+            "❓ <i>I couldn't identify the date you asked for.</i>\n\n"
+            "Try phrases like:\n"
+            "• <i>'What did I eat yesterday?'</i>\n"
+            "• <i>'Show meals on 25 Sep'</i>\n"
+            "• <i>'Calories on Friday'</i>\n"
+            "• <code>2026-09-25</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    status_msg = await update.message.reply_text(
+        f"📅 <i>Looking up meals for {target_date.strftime('%A, %d %b')}...</i>",
+        parse_mode=ParseMode.HTML,
+    )
+    try:
+        date_str = target_date.strftime("%Y-%m-%d")
+        meals = await firestore_service.get_user_meals_for_date(chat_id, date_str)
+        profile = await firestore_service.get_user_profile(chat_id)
+        summary = format_specific_date_summary(
+            date_obj=target_date,
+            meals=meals,
+            user_name=user_name,
+            targets=profile,
+        )
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("📊 7-Day Digest", callback_data="analytics_7d"),
+                InlineKeyboardButton("🔥 Today's Totals", callback_data="today_summary"),
+            ]
+        ])
+        await status_msg.edit_text(summary, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+    except Exception as e:
+        logger.error(f"Error handling date lookup: {e}", exc_info=True)
+        await status_msg.edit_text(
+            f"❌ <b>Error retrieving date summary:</b> {html.escape(str(e))}",
+            parse_mode=ParseMode.HTML,
+        )
+
+
+async def handle_analytics_qa(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    user_name: str,
+    text: str,
+) -> None:
+    """Processes conversational analytical questions about past nutrition data."""
+    status_msg = await update.message.reply_text("🔍 <i>Analyzing your past nutrition data...</i>", parse_mode=ParseMode.HTML)
+    try:
+        now = datetime.now(LOCAL_TZ).date()
+        lower_t = text.lower()
+        if any(w in lower_t for w in ["month", "30 day", "30-day"]):
+            days_window = 30
+        elif any(w in lower_t for w in ["two weeks", "14 day", "14-day", "fortnight"]):
+            days_window = 14
+        else:
+            days_window = 7 if any(w in lower_t for w in ["week", "7 day", "7-day"]) else 30
+
+        start_date = (now - timedelta(days=days_window - 1)).strftime("%Y-%m-%d")
+        end_date = now.strftime("%Y-%m-%d")
+
+        records = await firestore_service.get_user_date_range_records(chat_id, start_date, end_date)
+        profile = await firestore_service.get_user_profile(chat_id)
+        cal_target = profile.get("daily_calorie_target", 2000)
+        pro_target = profile.get("daily_protein_target", 150)
+        fib_target = profile.get("daily_fiber_target", 25)
+        targets_set = profile.get("targets_set", False)
+
+        logged_days = [r for r in records if r.get("calories", 0) > 0]
+        if not logged_days:
+            await status_msg.edit_text(
+                f"📊 <b>No Meal History Found ({days_window}-Day Window)</b>\n\n"
+                f"You haven't logged any meals in the past {days_window} days yet.\n\n"
+                "💡 <i>Snap a photo or type what you ate to start seeing your trend graphs!</i>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        total_days = days_window
+        days_logged = len(logged_days)
+        avg_cals = sum(r["calories"] for r in logged_days) / days_logged
+        avg_pro = sum(r["protein"] for r in logged_days) / days_logged
+        avg_carbs = sum(r["carbs"] for r in logged_days) / days_logged
+        avg_fat = sum(r["fat"] for r in logged_days) / days_logged
+        avg_fiber = sum(r["fiber"] for r in logged_days) / days_logged
+
+        on_track_days = sum(1 for r in logged_days if abs(r["calories"] - cal_target) <= (cal_target * 0.15))
+        over_target_days = sum(1 for r in logged_days if r["calories"] > (cal_target * 1.15))
+        under_target_days = sum(1 for r in logged_days if r["calories"] < (cal_target * 0.85))
+        hit_protein_days = sum(1 for r in logged_days if r["protein"] >= (pro_target * 0.90))
+
+        highest_cal_day = max(logged_days, key=lambda x: x["calories"])
+        lowest_cal_day = min(logged_days, key=lambda x: x["calories"])
+
+        context_lines = [
+            f"Analysis Window: Past {days_window} days ({start_date} to {end_date})",
+            f"User Targets Configured: {'Yes' if targets_set else 'No (Using standard 2000 kcal / 150g protein baselines)'}",
+            f"Daily Calorie Target: {int(cal_target)} kcal",
+            f"Daily Protein Target: {int(pro_target)}g",
+            f"Daily Fiber Target: {int(fib_target)}g",
+            f"Days with Logged Meals: {days_logged}/{total_days} days",
+            f"Days on Calorie Target (+/- 15%): {on_track_days}/{days_logged} ({round(on_track_days/days_logged*100)}%)",
+            f"Days Over Calorie Target: {over_target_days}",
+            f"Days Under Calorie Target: {under_target_days}",
+            f"Days Meeting Protein Target: {hit_protein_days}/{days_logged} ({round(hit_protein_days/days_logged*100)}%)",
+            f"Averages: {avg_cals:.0f} kcal, {avg_pro:.1f}g Protein, {avg_carbs:.1f}g Carbs, {avg_fat:.1f}g Fat, {avg_fiber:.1f}g Fiber",
+            f"Highest Calorie Day: {highest_cal_day['date']} ({highest_cal_day['calories']:.0f} kcal)",
+            f"Lowest Calorie Day: {lowest_cal_day['date']} ({lowest_cal_day['calories']:.0f} kcal)",
+            "",
+            "Day-by-Day Logged Details:",
+        ]
+        for r in logged_days:
+            score_str = f"Score: {round(r['nutrition_score_sum'] / r['nutrition_score_count'])}" if r.get("nutrition_score_count", 0) > 0 else "No score"
+            context_lines.append(
+                f"- {r['date']}: {r['calories']:.0f} kcal | {r['protein']:.1f}g P | {r['carbs']:.1f}g C | {r['fat']:.1f}g F | {r['fiber']:.1f}g Fib | {score_str}"
+            )
+
+        context_data = "\n".join(context_lines)
+        answer = await answer_analytics_qa_with_gemini(
+            user_question=text,
+            context_data=context_data,
+            user_name=user_name,
+        )
+
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("📊 7-Day Digest", callback_data="analytics_7d"),
+                InlineKeyboardButton("🗓️ 30-Day Digest", callback_data="analytics_30d"),
+            ],
+            [
+                InlineKeyboardButton("🖼️ View High-Res Chart", callback_data=f"chart_{days_window}d"),
+            ]
+        ])
+
+        await status_msg.edit_text(answer, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+    except Exception as e:
+        logger.error(f"Error handling analytics Q&A: {e}", exc_info=True)
+        await status_msg.edit_text(
+            f"❌ <b>Could not analyze past data:</b> {html.escape(str(e))}\n\n"
+            "Try asking in a different way or view your summary via /analytics.",
+            parse_mode=ParseMode.HTML,
+        )
+
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Intelligent Conversational Router:
@@ -2687,14 +3286,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await delete_command(update, context)
     elif intent == "targets":
         await targets_command(update, context)
+    elif intent == "analytics_qa":
+        await handle_analytics_qa(update, context, chat_id, user_name, text)
+    elif intent == "date_query":
+        await handle_specific_date_query(update, context, chat_id, user_name, text)
     elif intent == "analytics_7d":
-        status_msg = await update.message.reply_text("📈 <i>Generating 7-day analytics...</i>", parse_mode=ParseMode.HTML)
         await send_analytics_report(chat_id, user_name, context, days_window=7)
-        await status_msg.delete()
     elif intent == "analytics_30d":
-        status_msg = await update.message.reply_text("📈 <i>Generating 30-day analytics...</i>", parse_mode=ParseMode.HTML)
         await send_analytics_report(chat_id, user_name, context, days_window=30)
-        await status_msg.delete()
     elif intent == "edit":
         await execute_meal_edit(update, context, chat_id, user_name, text)
     elif intent == "feedback":
