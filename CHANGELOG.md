@@ -5,6 +5,15 @@ All notable changes to the **James Boh Macro Tracker** will be documented in thi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.6] - 2026-10-01
+
+### Added
+- **Meal Subtotal Nutrition & Cut Score**: When a logged meal contains multiple items, the `🥣 Meal Subtotal` section now calculates and displays an aggregate **calorie-weighted Nutrition & Cut Score** (out of 100) with dynamic status badge (🟢 `≥80`, 🟡 `55–79`, 🔴 `<55`).
+- **Daily Cumulative Nutrition & Cut Score**: Both the post-meal confirmation card (`Today's Cumulative Totals`) and the `/today` command now display the daily aggregate calorie-weighted nutrition score, providing instant holistic diet quality feedback.
+- **Calorie-Weighted Aggregation**: Prevents small condiments or low-calorie items from distorting the overall meal or daily score ($$Score = \frac{\sum calories_i \times score_i}{\sum calories_i}$$), with graceful fallback to simple average for 0-calorie items.
+
+---
+
 ## [1.3.5] - 2026-09-15
 
 ### Added

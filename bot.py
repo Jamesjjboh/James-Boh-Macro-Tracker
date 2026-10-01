@@ -425,10 +425,16 @@ class FirestoreService:
             "fiber": 0.0,
             "item_count": 0,
             "meal_count": 0,
+            "nutrition_score": None,
         }
+        weighted_score_sum = 0.0
+        simple_score_sum = 0.0
+        score_count = 0
+
         async for doc in query.stream():
             m = doc.to_dict()
-            totals["calories"] += float(m.get("total_calories", 0.0))
+            meal_cals = float(m.get("total_calories", 0.0))
+            totals["calories"] += meal_cals
             totals["protein"] += float(m.get("total_protein", 0.0))
             totals["carbs"] += float(m.get("total_carbs", 0.0))
             totals["fat"] += float(m.get("total_fat", 0.0))
@@ -436,11 +442,38 @@ class FirestoreService:
             totals["item_count"] += len(m.get("items", []))
             totals["meal_count"] += 1
 
+            items = m.get("items", [])
+            has_item_scores = False
+            if items:
+                for it in items:
+                    it_cal = float(it.get("calories", 0.0))
+                    it_score = it.get("nutrition_score")
+                    if it_score is not None:
+                        weighted_score_sum += it_cal * float(it_score)
+                        simple_score_sum += float(it_score)
+                        score_count += 1
+                        has_item_scores = True
+
+            if not has_item_scores:
+                score = m.get("nutrition_score")
+                if score is not None:
+                    score_val = float(score)
+                    weighted_score_sum += meal_cals * score_val
+                    simple_score_sum += score_val
+                    score_count += 1
+
         totals["calories"] = round(totals["calories"], 1)
         totals["protein"] = round(totals["protein"], 1)
         totals["carbs"] = round(totals["carbs"], 1)
         totals["fat"] = round(totals["fat"], 1)
         totals["fiber"] = round(totals["fiber"], 1)
+
+        if totals["calories"] > 0 and weighted_score_sum > 0:
+            totals["nutrition_score"] = round(weighted_score_sum / totals["calories"])
+        elif score_count > 0:
+            totals["nutrition_score"] = round(simple_score_sum / score_count)
+        else:
+            totals["nutrition_score"] = None
         return totals
 
     async def get_user_date_range_records(
@@ -1353,6 +1386,25 @@ def is_admin(update: Update) -> bool:
     return username in ADMIN_USERS
 
 
+def get_score_badge(score: float | int) -> str:
+    """Returns colored status emoji badge for a nutrition score out of 100."""
+    if score >= 80:
+        return "🟢"
+    elif score >= 55:
+        return "🟡"
+    return "🔴"
+
+
+def calculate_weighted_nutrition_score(items: List[FoodItem]) -> float:
+    """Calculates calorie-weighted nutrition score, falling back to simple average if calories sum to 0."""
+    if not items:
+        return 0.0
+    total_cal = sum(item.calories for item in items)
+    if total_cal > 0:
+        return sum(item.calories * item.nutrition_score for item in items) / total_cal
+    return sum(item.nutrition_score for item in items) / len(items)
+
+
 def format_telegram_reply(
     user_name: str,
     datetime_str: str,
@@ -1374,14 +1426,11 @@ def format_telegram_reply(
     meal_carb = sum(item.carbohydrates for item in items)
     meal_fat = sum(item.fat for item in items)
     meal_fib = sum(item.fiber for item in items)
+    meal_score = round(calculate_weighted_nutrition_score(items))
+    meal_score_badge = get_score_badge(meal_score)
 
     for i, item in enumerate(items, 1):
-        if item.nutrition_score >= 80:
-            score_badge = "🟢"
-        elif item.nutrition_score >= 55:
-            score_badge = "🟡"
-        else:
-            score_badge = "🔴"
+        score_badge = get_score_badge(item.nutrition_score)
 
         lines.extend([
             f"\n<b>{i}. {html.escape(item.item_name)}</b>",
@@ -1397,6 +1446,7 @@ def format_telegram_reply(
             "",
             "<b>🥣 Meal Subtotal:</b>",
             f"🔥 <b>{meal_cal:.0f} kcal</b>  |  🥩 <b>{meal_pro:.1f}g P</b>  |  🍞 <b>{meal_carb:.1f}g C</b>  |  🥑 <b>{meal_fat:.1f}g F</b>  |  🥗 <b>{meal_fib:.1f}g Fiber</b>",
+            f"{meal_score_badge} <i>Meal Nutrition & Cut Score:</i> <b>{meal_score}/100</b>",
         ])
 
     lines.extend([
@@ -1407,6 +1457,14 @@ def format_telegram_reply(
         f"🍞 <b>Carbohydrates:</b> <b>{today_totals['carbs']:.1f} g</b>",
         f"🥑 <b>Fat:</b> <b>{today_totals['fat']:.1f} g</b>",
         f"🥗 <b>Fiber:</b> <b>{today_totals.get('fiber', 0.0):.1f} g</b>",
+    ])
+
+    day_score = today_totals.get("nutrition_score")
+    if day_score is not None:
+        day_score_badge = get_score_badge(day_score)
+        lines.append(f"{day_score_badge} <i>Today's Nutrition & Cut Score:</i> <b>{round(day_score)}/100</b>")
+
+    lines.extend([
         f"📊 <i>Items logged today:</i> {today_totals['item_count']}",
         "",
         "──────── <b>Coach's Note</b> ────────",
@@ -1536,6 +1594,12 @@ async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         pro_display = f"<b>{totals['protein']:.1f} g</b> / {pro_target:,.0f}g" if targets_set else f"<b>{totals['protein']:.1f} g</b>"
         fib_display = f"<b>{totals['fiber']:.1f} g</b> / {fib_target:,.0f}g" if targets_set else f"<b>{totals['fiber']:.1f} g</b>"
 
+        score_line = ""
+        day_score = totals.get("nutrition_score")
+        if day_score is not None:
+            day_badge = get_score_badge(day_score)
+            score_line = f"\n{day_badge} <i>Today's Nutrition & Cut Score:</i> <b>{round(day_score)}/100</b>\n"
+
         summary_text = (
             f"📊 <b>Today's Cumulative Macros ({today_prefix})</b>\n"
             f"👤 <b>User:</b> {html.escape(user_name)}\n\n"
@@ -1543,7 +1607,8 @@ async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             f"🥩 <b>Protein:</b> {pro_display}\n"
             f"🍞 <b>Carbohydrates:</b> <b>{totals['carbs']:.1f} g</b>\n"
             f"🥑 <b>Fat:</b> <b>{totals['fat']:.1f} g</b>\n"
-            f"🥗 <b>Dietary Fiber:</b> {fib_display}\n\n"
+            f"🥗 <b>Dietary Fiber:</b> {fib_display}"
+            f"{score_line}\n"
             f"📝 <i>Meals logged today:</i> {totals['meal_count']} ({totals['item_count']} items)\n\n"
             "💡 <i>Tip: Type /analytics to see your 7-day trend chart!</i>"
         )
@@ -1794,7 +1859,7 @@ async def execute_meal_edit(
             "total_carbs": round(sum(i.carbohydrates for i in updated_analysis.items), 1),
             "total_fat": round(sum(i.fat for i in updated_analysis.items), 1),
             "total_fiber": round(sum(i.fiber for i in updated_analysis.items), 1),
-            "nutrition_score": round(sum(i.nutrition_score for i in updated_analysis.items) / len(updated_analysis.items)),
+            "nutrition_score": round(calculate_weighted_nutrition_score(updated_analysis.items)),
             "motivational_note": updated_analysis.motivational_note,
             "items": [i.model_dump() for i in updated_analysis.items],
         }
@@ -2371,7 +2436,7 @@ async def process_and_log_meal(
         "total_carbs": round(sum(i.carbohydrates for i in meal_result.items), 1),
         "total_fat": round(sum(i.fat for i in meal_result.items), 1),
         "total_fiber": round(sum(i.fiber for i in meal_result.items), 1),
-        "nutrition_score": round(sum(i.nutrition_score for i in meal_result.items) / len(meal_result.items)),
+        "nutrition_score": round(calculate_weighted_nutrition_score(meal_result.items)),
         "motivational_note": meal_result.motivational_note,
         "raw_text_prompt": text_prompt,
         "items": [i.model_dump() for i in meal_result.items],
@@ -2392,6 +2457,7 @@ async def process_and_log_meal(
             "fat": sum(i.fat for i in meal_result.items),
             "fiber": sum(i.fiber for i in meal_result.items),
             "item_count": len(meal_result.items),
+            "nutrition_score": round(calculate_weighted_nutrition_score(meal_result.items)),
         }
 
     # Optional Dual-Write to Google Sheets (if configured)

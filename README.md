@@ -45,9 +45,11 @@ No need to memorize slash commands! The bot understands natural language directl
 - ✏️ **Gemini Recalculation Engine**: Feed adjustments naturally (e.g. *"Ate only half the rice"* or *"Replace whole milk with oat milk"*). Gemini updates the exact itemized breakdown and recalculates today's totals atomically.
 - ↩️ **Instant Rollback (`/undo`)**: Quickly remove an accidental photo upload or duplicate entry with one tap.
 
-### 6. Dietary Fiber & Nutrition Quality Scoring
+### 6. Calorie-Weighted Nutrition & Quality Scoring (0–100)
 - 🥣 **Itemized Breakdown**: Separates composite meals into distinct components with individual macro profiles.
-- 🥗 **Dietary Fiber & Nutrition Score (0–100)**: Evaluates protein-to-calorie density, dietary fiber, whole food quality, and satiety.
+- ⚖️ **Calorie-Weighted Meal Subtotal Score**: For multi-dish meals, calculates a composite calorie-weighted score ($$\frac{\sum \text{calories}_i \times \text{score}_i}{\sum \text{calories}_i}$$) with dynamic badges (🟢 `≥80`, 🟡 `55–79`, 🔴 `<55`), preventing low-calorie sides from distorting healthy meals.
+- 📈 **Daily Cumulative Score**: Both the post-meal confirmation card (`Today's Cumulative Totals`) and `/today` calculate your overall daily diet score across all meals logged throughout the day.
+- 🥗 **Dietary Fiber & Satiety Metrics**: Evaluates protein-to-calorie density, dietary fiber, whole food quality, and fat-loss adherence.
 
 ### 7. In-App User Feedback & Suggestion System
 - 📬 **Multi-Channel Submissions**: Users can send feedback via `/feedback <text>`, `/suggest`, natural language (*"I have a suggestion"*, *"Report a bug"*), or the interactive `[ 💬 Send Feedback ]` button.

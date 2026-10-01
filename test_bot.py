@@ -17,6 +17,8 @@ from bot import (
     AnalyticsService,
     SHEET_HEADERS,
     format_telegram_reply,
+    get_score_badge,
+    calculate_weighted_nutrition_score,
     classify_text_intent,
     extract_category_override,
     MediaGroupBuffer,
@@ -111,7 +113,7 @@ class TestMacroTrackerBot(unittest.TestCase):
         self.assertEqual(len(SHEET_HEADERS), 11)
 
     def test_format_telegram_reply(self):
-        """Verify HTML formatting produces expected structure and escapes special chars."""
+        """Verify HTML formatting produces expected structure, badges, subtotal score, and cumulative score."""
         item1 = FoodItem(
             item_name="Grilled Salmon & Asparagus",
             category="Dinner",
@@ -130,6 +132,7 @@ class TestMacroTrackerBot(unittest.TestCase):
             "fat": 42.0,
             "fiber": 22.0,
             "item_count": 4,
+            "nutrition_score": 88,
         }
         msg = format_telegram_reply(
             user_name="@jamesboh",
@@ -148,6 +151,64 @@ class TestMacroTrackerBot(unittest.TestCase):
         self.assertIn("22.0 g", msg)
         self.assertIn("90/100", msg)
         self.assertIn("1450 kcal", msg)
+        # Single item should not have meal subtotal
+        self.assertNotIn("Meal Subtotal", msg)
+        # Today's cumulative score should be present
+        self.assertIn("🟢 <i>Today's Nutrition & Cut Score:</i> <b>88/100</b>", msg)
+
+        # Multi-item test: verify Meal Subtotal and Meal Nutrition & Cut Score
+        item2 = FoodItem(
+            item_name="Lemon Green Tea",
+            category="Dinner",
+            calories=20.0,
+            protein=0.0,
+            carbohydrates=5.0,
+            fat=0.0,
+            fiber=0.0,
+            short_description="Unsweetened green tea with a squeeze of fresh lemon",
+            nutrition_score=70,
+        )
+        multi_msg = format_telegram_reply(
+            user_name="@jamesboh",
+            datetime_str="2026-09-07 19:30:00",
+            items=[item1, item2],
+            today_totals=totals,
+            motivational_note="Great dinner pairing!",
+            sheet_saved=True,
+        )
+        self.assertIn("<b>🥣 Meal Subtotal:</b>", multi_msg)
+        # Weighted score: (380*90 + 20*70) / 400 = (34200 + 1400) / 400 = 35600 / 400 = 89
+        self.assertIn("🟢 <i>Meal Nutrition & Cut Score:</i> <b>89/100</b>", multi_msg)
+        self.assertIn("🟢 <i>Today's Nutrition & Cut Score:</i> <b>88/100</b>", multi_msg)
+
+    def test_weighted_nutrition_score_calculation(self):
+        """Test calorie-weighted nutrition score calculation across various edge cases."""
+        # Empty list
+        self.assertEqual(calculate_weighted_nutrition_score([]), 0.0)
+
+        # Single item
+        i1 = FoodItem(item_name="Eggs", category="Breakfast", calories=140.0, protein=12.0, carbohydrates=1.0, fat=10.0, fiber=0.0, short_description="2 eggs", nutrition_score=85)
+        self.assertEqual(calculate_weighted_nutrition_score([i1]), 85.0)
+
+        # Multi-item with unequal calories: 400 kcal @ 95, 20 kcal @ 40 -> (38000 + 800) / 420 = 92.38
+        i2 = FoodItem(item_name="Dressing", category="Breakfast", calories=20.0, protein=0.0, carbohydrates=1.0, fat=2.0, fiber=0.0, short_description="sauce", nutrition_score=40)
+        i3 = FoodItem(item_name="Steak", category="Breakfast", calories=400.0, protein=40.0, carbohydrates=0.0, fat=25.0, fiber=0.0, short_description="steak", nutrition_score=95)
+        score = calculate_weighted_nutrition_score([i2, i3])
+        self.assertAlmostEqual(score, (20 * 40 + 400 * 95) / 420, places=2)
+
+        # Zero total calories fallback to simple average
+        z1 = FoodItem(item_name="Water", category="Snack", calories=0.0, protein=0.0, carbohydrates=0.0, fat=0.0, fiber=0.0, short_description="water", nutrition_score=100)
+        z2 = FoodItem(item_name="Black Coffee", category="Snack", calories=0.0, protein=0.0, carbohydrates=0.0, fat=0.0, fiber=0.0, short_description="coffee", nutrition_score=80)
+        self.assertEqual(calculate_weighted_nutrition_score([z1, z2]), 90.0)
+
+    def test_get_score_badge(self):
+        """Verify score badge thresholds."""
+        self.assertEqual(get_score_badge(100), "🟢")
+        self.assertEqual(get_score_badge(80), "🟢")
+        self.assertEqual(get_score_badge(79.9), "🟡")
+        self.assertEqual(get_score_badge(55), "🟡")
+        self.assertEqual(get_score_badge(54.9), "🔴")
+        self.assertEqual(get_score_badge(0), "🔴")
 
     def test_natural_language_intent_classification(self):
         """Test routing of user text into appropriate command categories."""
@@ -455,6 +516,7 @@ class TestMacroTrackerBot(unittest.TestCase):
             self.assertEqual(totals["protein"], 40.0)
             self.assertEqual(totals["fiber"], 5.0)
             self.assertEqual(totals["item_count"], 2)
+            self.assertEqual(totals["nutrition_score"], 88)
 
             # 5. Read last meal
             last = await service.get_last_meal(test_chat_id)
