@@ -181,8 +181,10 @@ source .venv/bin/activate
 python -m unittest test_bot.py -v
 ```
 
-Tests cover (21 automated unit & integration tests):
+Tests cover (22 automated unit & integration tests):
 * Pydantic schema validation & score boundaries (0–100)
+* Gemini ultra-low-latency model cascade configuration & fallback guarantees
+* In-memory image optimization & high-speed downscaling (`optimize_image_for_vision`)
 * Conversational Intent Router (logging, editing, targets, feedback, analytics, historical date queries, analytical Q&A, export, privacy)
 * Conversational date parser (`parse_historical_date`) supporting relative dates, weekdays, and ISO formats
 * Historical date query detection (`is_date_lookup`) and single-day summary card generation (`format_specific_date_summary`)

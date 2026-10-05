@@ -7,7 +7,7 @@ Firestore CRUD operations, CSV exports, and privacy workflows.
 import asyncio
 import os
 import unittest
-from datetime import date
+from datetime import date, datetime, timedelta
 from unittest.mock import MagicMock
 
 from bot import (
@@ -16,6 +16,7 @@ from bot import (
     GoogleSheetsService,
     FirestoreService,
     AnalyticsService,
+    LOCAL_TZ,
     SHEET_HEADERS,
     format_telegram_reply,
     get_score_badge,
@@ -28,6 +29,7 @@ from bot import (
     is_date_lookup,
     is_analytics_qa,
     format_specific_date_summary,
+    optimize_image_for_vision,
 )
 
 
@@ -546,11 +548,28 @@ class TestMacroTrackerBot(unittest.TestCase):
         asyncio.run(run_lifecycle())
 
     def test_gemini_candidate_models_configuration(self):
-        """Verify fallback cascade has at least 3 models and excludes throttled preview."""
+        """Verify fallback cascade has at least 3 models, prioritizes flash-lite, and excludes throttled preview."""
         self.assertGreaterEqual(len(GEMINI_CANDIDATE_MODELS), 3)
+        self.assertEqual(GEMINI_CANDIDATE_MODELS[0], "gemini-3.5-flash-lite")
         self.assertIn("gemini-3.6-flash", GEMINI_CANDIDATE_MODELS)
         self.assertIn("gemini-3.5-flash", GEMINI_CANDIDATE_MODELS)
         self.assertNotIn("gemini-3-flash-preview", GEMINI_CANDIDATE_MODELS)
+
+    def test_optimize_image_for_vision(self):
+        """Verify high-resolution images are downscaled to <= 1280px and compressed."""
+        import io
+        from PIL import Image
+        img = Image.new("RGB", (2560, 1440), color=(120, 80, 40))
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=95)
+        raw_bytes = buf.getvalue()
+
+        optimized = optimize_image_for_vision(raw_bytes, max_dim=1280)
+        self.assertIsInstance(optimized, bytes)
+        self.assertLess(len(optimized), len(raw_bytes))
+
+        with Image.open(io.BytesIO(optimized)) as opt_img:
+            self.assertLessEqual(max(opt_img.size), 1280)
 
     def test_parse_historical_date(self):
         """Verify conversational date parsing for yesterday, weekdays, and date formats."""
@@ -638,10 +657,11 @@ class TestMacroTrackerBot(unittest.TestCase):
 
     def test_format_analytics_text_with_progress_bar(self):
         """Verify that format_analytics_text includes the day-by-day Unicode progress bar tracker."""
+        today = datetime.now(LOCAL_TZ).date()
         records = [
-            {"date": "2026-09-25", "calories": 1920.0, "protein": 148.0, "carbs": 160.0, "fat": 50.0, "fiber": 24.0, "nutrition_score_sum": 88, "nutrition_score_count": 1},
-            {"date": "2026-09-26", "calories": 2150.0, "protein": 155.0, "carbs": 190.0, "fat": 62.0, "fiber": 26.0, "nutrition_score_sum": 82, "nutrition_score_count": 1},
-            {"date": "2026-09-27", "calories": 1800.0, "protein": 140.0, "carbs": 140.0, "fat": 48.0, "fiber": 22.0, "nutrition_score_sum": 90, "nutrition_score_count": 1},
+            {"date": (today - timedelta(days=2)).isoformat(), "calories": 1920.0, "protein": 148.0, "carbs": 160.0, "fat": 50.0, "fiber": 24.0, "nutrition_score_sum": 88, "nutrition_score_count": 1},
+            {"date": (today - timedelta(days=1)).isoformat(), "calories": 2150.0, "protein": 155.0, "carbs": 190.0, "fat": 62.0, "fiber": 26.0, "nutrition_score_sum": 82, "nutrition_score_count": 1},
+            {"date": today.isoformat(), "calories": 1800.0, "protein": 140.0, "carbs": 140.0, "fat": 48.0, "fiber": 22.0, "nutrition_score_sum": 90, "nutrition_score_count": 1},
         ]
         targets = {"targets_set": True, "daily_calorie_target": 2000, "daily_protein_target": 150, "daily_fiber_target": 25}
         text = AnalyticsService.format_analytics_text(records, "@jamesboh", days_window=7, targets=targets)
