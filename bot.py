@@ -1315,7 +1315,7 @@ async def edit_meal_with_gemini(
                 if category_override:
                     for it in analysis.items:
                         it.category = category_override
-                    return analysis
+                return analysis
         except Exception as e:
             logger.warning(f"Model {model_name} failed during edit: {e}. Trying fallback...")
             last_error = e

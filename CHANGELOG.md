@@ -5,6 +5,14 @@ All notable changes to the **James Boh Macro Tracker** will be documented in thi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.9] - 2026-10-06
+
+### Fixed
+- **Meal Edit Flow Without Category Overrides**: Fixed an indentation bug in `edit_meal_with_gemini` where `return analysis` was nested inside the `if category_override:` block. When users edited meals without specifying a category change (e.g. adding dishes, portion tweaks, beverage additions), the return was inadvertently skipped, causing the bot to exhaust all fallback models and falsely report a 503 AI high-demand error.
+- **Automated Regression Test**: Added `test_edit_meal_without_category_override` in `test_bot.py` to guarantee non-category meal edits return immediate recalculated analyses.
+
+---
+
 ## [1.3.8] - 2026-10-05
 
 ### Added

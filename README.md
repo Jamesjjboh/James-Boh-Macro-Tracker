@@ -181,7 +181,7 @@ source .venv/bin/activate
 python -m unittest test_bot.py -v
 ```
 
-Tests cover (22 automated unit & integration tests):
+Tests cover (23 automated unit & integration tests):
 * Pydantic schema validation & score boundaries (0–100)
 * Gemini ultra-low-latency model cascade configuration & fallback guarantees
 * In-memory image optimization & high-speed downscaling (`optimize_image_for_vision`)

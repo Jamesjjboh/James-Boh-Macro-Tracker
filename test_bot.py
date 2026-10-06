@@ -30,6 +30,7 @@ from bot import (
     is_analytics_qa,
     format_specific_date_summary,
     optimize_image_for_vision,
+    edit_meal_with_gemini,
 )
 
 
@@ -570,6 +571,38 @@ class TestMacroTrackerBot(unittest.TestCase):
 
         with Image.open(io.BytesIO(optimized)) as opt_img:
             self.assertLessEqual(max(opt_img.size), 1280)
+
+    def test_edit_meal_without_category_override(self):
+        """Verify edit_meal_with_gemini returns analysis even when no category override is present."""
+        from unittest.mock import AsyncMock, patch
+        mock_response = MagicMock()
+        mock_response.parsed = MealAnalysisResponse(
+            items=[FoodItem(
+                item_name="Chickpea Mushroom Soup",
+                category="Dinner",
+                calories=280.0,
+                protein=14.0,
+                carbohydrates=38.0,
+                fat=8.0,
+                fiber=8.0,
+                nutrition_score=92,
+                short_description="High-fiber soup"
+            )],
+            motivational_note="Great healthy swap!"
+        )
+        mock_response.text = None
+
+        mock_client = MagicMock()
+        mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
+
+        with patch("bot.get_gemini_client", return_value=mock_client):
+            res = asyncio.run(edit_meal_with_gemini(
+                existing_meal={"category": "Dinner", "items": []},
+                edit_instructions="2. Chickpea mushroom soup\n3. Hot milo"
+            ))
+            self.assertEqual(len(res.items), 1)
+            self.assertEqual(res.items[0].item_name, "Chickpea Mushroom Soup")
+            self.assertEqual(res.items[0].category, "Dinner")
 
     def test_parse_historical_date(self):
         """Verify conversational date parsing for yesterday, weekdays, and date formats."""
