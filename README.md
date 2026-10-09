@@ -49,6 +49,7 @@ No need to memorize slash commands! The bot understands natural language directl
 
 ### 6. Smart Meal Editing, Quote-Reply & Categorization
 - 💬 **Swipe / Quote-Reply Historical Editing**: Swipe to reply to **any** past meal or photo card in chat. The bot uses Firestore message-ID tracking to pinpoint and modify that exact meal.
+- 📅 **Natural Language Date Moves & Past-Midnight Logging**: Log meals past midnight with captions like *"This was yesterday's dinner"* or *"Dinner last night"* to automatically attribute meals to yesterday. Swipe to reply with *"Move to yesterday"* or *"Date: 2026-10-08"* to instantly move meals between dates and recalculate daily totals.
 - 🏷️ **Natural Language Category Updates**: Reclassify meals instantly (e.g. *"This entry is for lunch"*, *"Change to dinner"*, *"Mark as snack"*).
 - ✏️ **Gemini Recalculation Engine**: Feed adjustments naturally (e.g. *"Ate only half the rice"* or *"Replace whole milk with oat milk"*). Gemini updates the exact itemized breakdown and recalculates today's totals atomically.
 - ↩️ **Instant Rollback (`/undo`)**: Quickly remove an accidental photo upload or duplicate entry with one tap.
@@ -181,12 +182,15 @@ source .venv/bin/activate
 python -m unittest test_bot.py -v
 ```
 
-Tests cover (23 automated unit & integration tests):
+Tests cover (26 automated unit & integration tests):
 * Pydantic schema validation & score boundaries (0–100)
 * Gemini ultra-low-latency model cascade configuration & fallback guarantees
 * In-memory image optimization & high-speed downscaling (`optimize_image_for_vision`)
 * Conversational Intent Router (logging, editing, targets, feedback, analytics, historical date queries, analytical Q&A, export, privacy)
-* Conversational date parser (`parse_historical_date`) supporting relative dates, weekdays, and ISO formats
+* Conversational date parser (`parse_historical_date`) supporting relative dates, weekdays, smart apostrophes, and ISO formats
+* Historical meal date extraction from captions (`extract_historical_meal_date`) for past-midnight logs
+* Natural language quote-reply date moves across days (`extract_date_override`)
+* Dynamic yesterday and historical summary formatting (`format_telegram_reply_yesterday`)
 * Historical date query detection (`is_date_lookup`) and single-day summary card generation (`format_specific_date_summary`)
 * Analytical Q&A intent detection (`is_analytics_qa`) for goal achievement, averages, and consistency queries
 * In-chat text-first visual dashboard with Unicode progress bars (`🟩🟩🟩⬜`, `🟨`, `🟧`, `⬜`) and daily adherence

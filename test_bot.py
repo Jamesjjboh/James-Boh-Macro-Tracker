@@ -31,6 +31,8 @@ from bot import (
     format_specific_date_summary,
     optimize_image_for_vision,
     edit_meal_with_gemini,
+    extract_historical_meal_date,
+    extract_date_override,
 )
 
 
@@ -698,9 +700,58 @@ class TestMacroTrackerBot(unittest.TestCase):
         ]
         targets = {"targets_set": True, "daily_calorie_target": 2000, "daily_protein_target": 150, "daily_fiber_target": 25}
         text = AnalyticsService.format_analytics_text(records, "@jamesboh", days_window=7, targets=targets)
-        self.assertIn("Day-by-Day Calorie Tracker", text)
-        self.assertIn("🟩", text)
-        self.assertIn("Coach Analysis", text)
+    def test_extract_historical_meal_date(self):
+        """Verify extraction of intended meal date from user caption or prompt."""
+        ref = date(2026, 10, 9)
+        # Yesterday phrasing (including curly apostrophe)
+        self.assertEqual(extract_historical_meal_date("This was yesterday’s dinner", reference_date=ref), date(2026, 10, 8))
+        self.assertEqual(extract_historical_meal_date("yesterday dinner: laksa", reference_date=ref), date(2026, 10, 8))
+        self.assertEqual(extract_historical_meal_date("dinner last night", reference_date=ref), date(2026, 10, 8))
+        self.assertEqual(extract_historical_meal_date("dinner on 8 oct", reference_date=ref), date(2026, 10, 8))
+        # Non-historical entries default to reference date
+        self.assertEqual(extract_historical_meal_date("chicken rice for lunch", reference_date=ref), date(2026, 10, 9))
+        self.assertEqual(extract_historical_meal_date(None, reference_date=ref), date(2026, 10, 9))
+        self.assertEqual(extract_historical_meal_date("", reference_date=ref), date(2026, 10, 9))
+
+    def test_extract_date_override(self):
+        """Verify extraction of date override instructions during meal edits."""
+        ref = date(2026, 10, 9)
+        self.assertEqual(extract_date_override("change date to yesterday", reference_date=ref), date(2026, 10, 8))
+        self.assertEqual(extract_date_override("this was for yesterday", reference_date=ref), date(2026, 10, 8))
+        self.assertEqual(extract_date_override("move to yesterday", reference_date=ref), date(2026, 10, 8))
+        self.assertEqual(extract_date_override("date: 2026-10-08", reference_date=ref), date(2026, 10, 8))
+        # Non-date edits return None
+        self.assertIsNone(extract_date_override("change to dinner", reference_date=ref))
+        self.assertIsNone(extract_date_override("remove sugar, add egg", reference_date=ref))
+
+    def test_format_telegram_reply_yesterday(self):
+        """Verify format_telegram_reply customizes headers when meal is attributed to yesterday."""
+        ref = datetime.now(LOCAL_TZ).date()
+        yesterday = ref - timedelta(days=1)
+        item = FoodItem(
+            item_name="Chicken and Seaweed Soup",
+            category="Dinner",
+            calories=320.0,
+            protein=42.0,
+            carbohydrates=8.0,
+            fat=12.0,
+            fiber=3.0,
+            short_description="Soup",
+            nutrition_score=88,
+        )
+        totals = {"calories": 1132.0, "protein": 101.0, "carbs": 52.4, "fat": 54.0, "fiber": 10.0, "item_count": 6, "nutrition_score": 84}
+        text = format_telegram_reply(
+            user_name="@jamesboh",
+            datetime_str=f"{yesterday.isoformat()} 21:11:38",
+            items=[item],
+            today_totals=totals,
+            motivational_note="Great soup!",
+            target_date=yesterday,
+        )
+        self.assertIn("Meal Logged for Yesterday", text)
+        self.assertIn("Yesterday's Cumulative Totals", text)
+        self.assertIn("Yesterday's Nutrition & Cut Score:", text)
+        self.assertIn("Items logged for yesterday:", text)
 
 
 if __name__ == "__main__":

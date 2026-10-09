@@ -1410,9 +1410,9 @@ def parse_historical_date(text: str, reference_date: Optional[date] = None) -> O
     """Parses natural language date references relative to Singapore local time."""
     if reference_date is None:
         reference_date = datetime.now(LOCAL_TZ).date()
-    t = text.strip().lower()
+    t = text.strip().lower().replace("’", "'")
 
-    if "yesterday" in t:
+    if "yesterday" in t or "last night" in t:
         return reference_date - timedelta(days=1)
 
     ago_m = re.search(r"\b(\d+)\s+days?\s+ago\b", t)
@@ -1482,6 +1482,55 @@ def parse_historical_date(text: str, reference_date: Optional[date] = None) -> O
                 delta = 7
             return reference_date - timedelta(days=delta)
 
+    return None
+
+
+def extract_historical_meal_date(text: Optional[str], reference_date: Optional[date] = None) -> date:
+    """
+    Extracts intended target date for a meal from caption or text prompt.
+    Supports phrases like:
+      - 'this was yesterday's dinner', 'yesterday dinner', 'dinner yesterday'
+      - 'last night's dinner', 'dinner last night', 'last night'
+      - 'for yesterday', 'from yesterday', 'eaten yesterday', 'was yesterday'
+      - '2 days ago', 'on friday', 'dated 2026-10-08'
+    Defaults to reference_date (today) if no historical date phrase is found.
+    """
+    if reference_date is None:
+        reference_date = datetime.now(LOCAL_TZ).date()
+
+    if not text:
+        return reference_date
+
+    low = text.lower().strip().replace("’", "'")
+
+    # Fast check for yesterday or last night
+    if any(k in low for k in ["yesterday", "last night"]):
+        return reference_date - timedelta(days=1)
+
+    # General date parsing
+    parsed = parse_historical_date(low, reference_date=reference_date)
+    if parsed and parsed <= reference_date:
+        date_intent_indicators = [
+            "for", "on", "from", "was", "eaten", "logged", "dated", "ago", "last", "yesterday", "night"
+        ]
+        if any(w in low for w in date_intent_indicators) or re.search(r"\b(20\d\d-\d{1,2}-\d{1,2}|\d{1,2}/\d{1,2})\b", low):
+            return parsed
+
+    return reference_date
+
+
+def extract_date_override(instruction: str, reference_date: Optional[date] = None) -> Optional[date]:
+    """Detects explicit date modifications in natural language edit instructions."""
+    if reference_date is None:
+        reference_date = datetime.now(LOCAL_TZ).date()
+    low = instruction.lower().strip().replace("’", "'")
+
+    date_indicators = [
+        "yesterday", "last night", "change date", "move to", "for yesterday",
+        "was yesterday", "eaten yesterday", "from yesterday", "date:", "dated"
+    ]
+    if any(k in low for k in date_indicators) or re.search(r"\b(20\d\d-\d{1,2}-\d{1,2}|\d{1,2}/\d{1,2})\b", low):
+        return parse_historical_date(low, reference_date)
     return None
 
 
@@ -1821,9 +1870,36 @@ def format_telegram_reply(
     today_totals: dict,
     motivational_note: str,
     sheet_saved: bool = True,
+    target_date: Optional[date] = None,
 ) -> str:
+    today = datetime.now(LOCAL_TZ).date()
+    if target_date is not None:
+        is_today = (target_date == today)
+        is_yesterday = (target_date == today - timedelta(days=1))
+        if is_today:
+            header_title = "🍽️ <b>Meal Logged Successfully!</b>"
+            totals_header = "──────── <b>Today's Cumulative Totals</b> ────────"
+            score_label = "Today's Nutrition & Cut Score:"
+            items_count_label = "Items logged today:"
+        elif is_yesterday:
+            header_title = f"🍽️ <b>Meal Logged for Yesterday ({target_date.strftime('%a, %d %b')})!</b>"
+            totals_header = f"──────── <b>Yesterday's Cumulative Totals ({target_date.strftime('%a, %d %b')})</b> ────────"
+            score_label = "Yesterday's Nutrition & Cut Score:"
+            items_count_label = "Items logged for yesterday:"
+        else:
+            date_fmt = target_date.strftime("%a, %d %b %Y")
+            header_title = f"🍽️ <b>Meal Logged for {date_fmt}!</b>"
+            totals_header = f"──────── <b>Cumulative Totals for {date_fmt}</b> ────────"
+            score_label = f"Nutrition & Cut Score ({date_fmt}):"
+            items_count_label = f"Items logged on {date_fmt}:"
+    else:
+        header_title = "🍽️ <b>Meal Logged Successfully!</b>"
+        totals_header = "──────── <b>Today's Cumulative Totals</b> ────────"
+        score_label = "Today's Nutrition & Cut Score:"
+        items_count_label = "Items logged today:"
+
     lines = [
-        "🍽️ <b>Meal Logged Successfully!</b>",
+        header_title,
         f"👤 <b>Logged by:</b> {html.escape(user_name)}",
         f"🕒 <b>Time:</b> <code>{html.escape(datetime_str)}</code>",
         "",
@@ -1860,7 +1936,7 @@ def format_telegram_reply(
 
     lines.extend([
         "",
-        "──────── <b>Today's Cumulative Totals</b> ────────",
+        totals_header,
         f"🔥 <b>Total Calories:</b> <b>{today_totals['calories']:.0f} kcal</b>",
         f"🥩 <b>Protein:</b> <b>{today_totals['protein']:.1f} g</b>",
         f"🍞 <b>Carbohydrates:</b> <b>{today_totals['carbs']:.1f} g</b>",
@@ -1871,10 +1947,10 @@ def format_telegram_reply(
     day_score = today_totals.get("nutrition_score")
     if day_score is not None:
         day_score_badge = get_score_badge(day_score)
-        lines.append(f"{day_score_badge} <i>Today's Nutrition & Cut Score:</i> <b>{round(day_score)}/100</b>")
+        lines.append(f"{day_score_badge} <i>{score_label}</i> <b>{round(day_score)}/100</b>")
 
     lines.extend([
-        f"📊 <i>Items logged today:</i> {today_totals['item_count']}",
+        f"📊 <i>{items_count_label}</i> {today_totals['item_count']}",
         "",
         "──────── <b>Coach's Note</b> ────────",
         f"💪 <i>{html.escape(motivational_note)}</i>",
@@ -2308,7 +2384,7 @@ async def execute_meal_edit(
             return
 
         now = datetime.now(LOCAL_TZ)
-        today_prefix = target_meal.get("date") or now.strftime("%Y-%m-%d")
+        meal_date_str = target_meal.get("date") or now.strftime("%Y-%m-%d")
 
         updated_meal_data = {
             "category": updated_analysis.items[0].category if updated_analysis.items else target_meal.get("category", "Meal"),
@@ -2322,18 +2398,31 @@ async def execute_meal_edit(
             "items": [i.model_dump() for i in updated_analysis.items],
         }
 
+        date_override = extract_date_override(edit_instructions, reference_date=now.date())
+        if date_override:
+            meal_date_str = date_override.strftime("%Y-%m-%d")
+            updated_meal_data["date"] = meal_date_str
+            old_time = target_meal.get("time") or now.strftime("%H:%M:%S")
+            updated_meal_data["timestamp"] = f"{meal_date_str} {old_time}"
+
         await firestore_service.update_meal(chat_id, target_meal["id"], updated_meal_data)
-        today_totals = await firestore_service.get_user_today_totals(chat_id, today_prefix)
+        today_totals = await firestore_service.get_user_today_totals(chat_id, meal_date_str)
+
+        target_date_obj = date_override if date_override else (datetime.strptime(meal_date_str, "%Y-%m-%d").date() if meal_date_str else None)
 
         reply_html = format_telegram_reply(
             user_name=user_name,
-            datetime_str=target_meal.get("timestamp") or str(now),
+            datetime_str=updated_meal_data.get("timestamp") or target_meal.get("timestamp") or str(now),
             items=updated_analysis.items,
             today_totals=today_totals,
             motivational_note=updated_analysis.motivational_note,
             sheet_saved=True,
+            target_date=target_date_obj,
         )
-        reply_html = f"✏️ <b>Meal Updated Successfully!</b>\n\n" + reply_html
+        if date_override:
+            reply_html = f"📅 <b>Meal Date Moved to {date_override.strftime('%a, %d %b %Y')}!</b>\n\n" + reply_html
+        else:
+            reply_html = f"✏️ <b>Meal Updated Successfully!</b>\n\n" + reply_html
         try:
             await status_msg.edit_text(reply_html, parse_mode=ParseMode.HTML)
         except Exception as e:
@@ -2858,8 +2947,10 @@ async def process_and_log_meal(
     user_name = get_user_display_name(update)
     chat_id = update.effective_chat.id
     now = datetime.now(LOCAL_TZ)
-    date_time_str = now.strftime("%Y-%m-%d %H:%M:%S")
-    today_prefix = now.strftime("%Y-%m-%d")
+    target_meal_date = extract_historical_meal_date(text_prompt, reference_date=now.date())
+    meal_date_str = target_meal_date.strftime("%Y-%m-%d")
+    meal_time_str = now.strftime("%H:%M:%S")
+    date_time_str = f"{meal_date_str} {meal_time_str}"
 
     await update.message.chat.send_action(action=ChatAction.TYPING)
     if status_msg is None:
@@ -2899,8 +2990,8 @@ async def process_and_log_meal(
 
     # Save to Firestore (Primary Multi-Tenant Store)
     meal_doc = {
-        "date": today_prefix,
-        "time": now.strftime("%H:%M:%S"),
+        "date": meal_date_str,
+        "time": meal_time_str,
         "timestamp": date_time_str,
         "category": meal_result.items[0].category if meal_result.items else "Meal",
         "total_calories": round(sum(i.calories for i in meal_result.items), 1),
@@ -2919,10 +3010,10 @@ async def process_and_log_meal(
     saved_meal_id = None
     try:
         saved_meal_id = await firestore_service.save_meal(chat_id, user_name, meal_doc)
-        today_totals = await firestore_service.get_user_today_totals(chat_id, today_prefix)
+        day_totals = await firestore_service.get_user_today_totals(chat_id, meal_date_str)
     except Exception as e:
         logger.error(f"Firestore save error: {e}", exc_info=True)
-        today_totals = {
+        day_totals = {
             "calories": sum(i.calories for i in meal_result.items),
             "protein": sum(i.protein for i in meal_result.items),
             "carbs": sum(i.carbohydrates for i in meal_result.items),
@@ -2955,9 +3046,10 @@ async def process_and_log_meal(
         user_name=user_name,
         datetime_str=date_time_str,
         items=meal_result.items,
-        today_totals=today_totals,
+        today_totals=day_totals,
         motivational_note=meal_result.motivational_note,
         sheet_saved=True,
+        target_date=target_meal_date,
     )
     try:
         await status_msg.edit_text(reply_html, parse_mode=ParseMode.HTML)

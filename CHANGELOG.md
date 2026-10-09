@@ -5,6 +5,19 @@ All notable changes to the **James Boh Macro Tracker** will be documented in thi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-10-09
+
+### Added
+- **Natural Language Historical Date Attribution from Captions (`extract_historical_meal_date`)**: Users who log late-night meals past midnight (e.g. at 1:11am) with captions such as *"This was yesterday's dinner"*, *"Dinner last night"*, or *"Logged for yesterday"* now have their meals automatically attributed to the intended historical date (`yesterday`). Cumulative totals, subtotals, and daily summaries immediately reflect the correct target date.
+- **Quote-Reply Date Override & Meal Moving (`extract_date_override`)**: Users can now swipe to reply to any historical meal card to move it across dates using natural language (e.g. *"Change date to yesterday"*, *"Move to yesterday"*, *"This was for yesterday"*, *"Date: 2026-10-08"*). Firestore `date` and `timestamp` fields are atomically updated and daily totals recalculated.
+- **Dynamic Yesterday & Historical Summary Formatting**: `format_telegram_reply` now dynamically renders clear headers when meals are attributed to past dates: *"Meal Logged for Yesterday (Thu, 08 Oct)!"* and *"Yesterday's Cumulative Totals"* instead of confusingly showing today's date and totals.
+- **Automated Regression & Unit Tests**: Added `test_extract_historical_meal_date`, `test_extract_date_override`, and `test_format_telegram_reply_yesterday` in `test_bot.py`, bringing the automated test suite to 26 passing tests.
+
+### Changed
+- **Smart Apostrophe Normalization**: Updated `parse_historical_date` and date extractors to automatically normalize curly iOS/macOS smart apostrophes (`’` $\rightarrow$ `'`) and expanded phrase matching to recognize *"last night"*.
+
+---
+
 ## [1.3.9] - 2026-10-06
 
 ### Fixed
