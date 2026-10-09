@@ -33,6 +33,7 @@ from bot import (
     edit_meal_with_gemini,
     extract_historical_meal_date,
     extract_date_override,
+    is_meal_coaching_query,
 )
 
 
@@ -259,6 +260,8 @@ class TestMacroTrackerBot(unittest.TestCase):
             ("report a bug", "feedback"),
             ("feedback: please add apple watch support", "feedback"),
             ("suggestion: add barcode scanning", "feedback"),
+            ("how I can improve nutrition score or lower calories", "meal_coaching"),
+            ("how to lower calories", "meal_coaching"),
             ("Chicken rice with iced lemon tea", "food_log"),
             ("2 hard boiled eggs with oatmeal and blueberries", "food_log"),
         ]
@@ -366,6 +369,35 @@ class TestMacroTrackerBot(unittest.TestCase):
             mock_edit.assert_called_once_with(
                 mock_update, mock_context, 102325434, "@test_user", "this entry is for lunch", target_meal=target_meal_sample
             )
+
+    def test_quote_reply_routes_to_coaching(self):
+        """Verify that replying to a bot meal card with score improvement query calls handle_meal_coaching and NOT execute_meal_edit."""
+        from unittest.mock import AsyncMock, patch
+        from bot import handle_text
+
+        mock_update = MagicMock()
+        mock_update.message.text = "how I can improve nutrition score or lower calories"
+        mock_update.message.reply_to_message = MagicMock()
+        mock_update.message.reply_to_message.message_id = 999
+        mock_update.message.reply_to_message.from_user.is_bot = True
+        mock_update.effective_chat.id = 102325434
+        mock_update.effective_user.username = "test_user"
+
+        mock_context = MagicMock()
+        mock_context.user_data = {}
+
+        target_meal_sample = {"id": "sample_meal_1", "category": "Dinner", "items": []}
+
+        with patch("bot.firestore_service.find_meal_by_message_id", new_callable=AsyncMock) as mock_find, \
+             patch("bot.firestore_service.get_last_meal", new_callable=AsyncMock) as mock_last, \
+             patch("bot.handle_meal_coaching", new_callable=AsyncMock) as mock_coaching, \
+             patch("bot.execute_meal_edit", new_callable=AsyncMock) as mock_edit:
+            mock_find.return_value = target_meal_sample
+            asyncio.run(handle_text(mock_update, mock_context))
+            mock_coaching.assert_called_once_with(
+                mock_update, mock_context, 102325434, "@test_user", "how I can improve nutrition score or lower calories", target_meal=target_meal_sample
+            )
+            mock_edit.assert_not_called()
 
     def test_analytics_chart_generation(self):
         """Verify Matplotlib headless generation produces a non-empty PNG buffer."""
@@ -700,6 +732,34 @@ class TestMacroTrackerBot(unittest.TestCase):
         ]
         targets = {"targets_set": True, "daily_calorie_target": 2000, "daily_protein_target": 150, "daily_fiber_target": 25}
         text = AnalyticsService.format_analytics_text(records, "@jamesboh", days_window=7, targets=targets)
+        self.assertIn("Day-by-Day Calorie Tracker", text)
+        self.assertIn("🟩", text)
+        self.assertIn("Coach Analysis", text)
+
+    def test_is_meal_coaching_query(self):
+        """Verify is_meal_coaching_query identifies score improvement and calorie lowering advice requests."""
+        # Exact user query and variations
+        self.assertTrue(is_meal_coaching_query("ask how I can improve nutrition score or lower calories"))
+        self.assertTrue(is_meal_coaching_query("how I can improve nutrition score or lower calories"))
+        self.assertTrue(is_meal_coaching_query("how ti mprove nutrition score or lower calories"))
+        self.assertTrue(is_meal_coaching_query("how can i improve nutrition score"))
+        self.assertTrue(is_meal_coaching_query("how to lower calories"))
+        self.assertTrue(is_meal_coaching_query("how to make this healthier"))
+        self.assertTrue(is_meal_coaching_query("any tips to lower calories in this meal?"))
+        self.assertTrue(is_meal_coaching_query("how can I get a higher score"))
+        self.assertTrue(is_meal_coaching_query("how do I get more protein in this meal?"))
+        self.assertTrue(is_meal_coaching_query("tips to improve nutrition score"))
+        self.assertTrue(is_meal_coaching_query("how to cut calories"))
+
+        # Non-coaching queries
+        self.assertFalse(is_meal_coaching_query("change to dinner"))
+        self.assertFalse(is_meal_coaching_query("actually had half the rice"))
+        self.assertFalse(is_meal_coaching_query("chicken rice for lunch"))
+        self.assertFalse(is_meal_coaching_query("what did i eat yesterday"))
+        self.assertFalse(is_meal_coaching_query("did i hit my calorie goals for the past month"))
+        self.assertFalse(is_meal_coaching_query(None))
+        self.assertFalse(is_meal_coaching_query(""))
+
     def test_extract_historical_meal_date(self):
         """Verify extraction of intended meal date from user caption or prompt."""
         ref = date(2026, 10, 9)

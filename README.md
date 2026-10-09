@@ -54,19 +54,27 @@ No need to memorize slash commands! The bot understands natural language directl
 - ✏️ **Gemini Recalculation Engine**: Feed adjustments naturally (e.g. *"Ate only half the rice"* or *"Replace whole milk with oat milk"*). Gemini updates the exact itemized breakdown and recalculates today's totals atomically.
 - ↩️ **Instant Rollback (`/undo`)**: Quickly remove an accidental photo upload or duplicate entry with one tap.
 
-### 7. Calorie-Weighted Nutrition & Quality Scoring (0–100)
+### 7. Interactive Meal Coaching & Score Optimization (`/coach`, `/improve`)
+- 💡 **Swipe-to-Coach Disambiguation**: Swipe on any past meal card or photo and ask: *"How can I improve nutrition score or lower calories?"*, *"How to make this healthier?"*, or *"Tips to lower calories"*.
+- 🧠 **Zero Recalculation Overhead**: Intelligently separates advice queries from meal edit commands. Instead of recalculating or modifying the meal log, Gemini acts as your personal culinary dietitian:
+  - 🥗 **How to Boost Nutrition & Cut Score**: Actionable steps to increase protein-to-calorie density, dietary fiber/greens, and micronutrient quality.
+  - 📉 **How to Lower Calories**: Practical ordering hacks and portion cuts (e.g. half carbs, sauces/dressings on the side, skinless chicken) with exact estimated calorie savings (e.g. -150 to -250 kcal).
+  - 🎯 **Estimated Impact Projection**: See potential improvements before eating (e.g. ~420 kcal down from 650 kcal | Score 85+ up from 68).
+  - ✏️ **One-Tap Update Flow**: If you applied any of the suggestions, swipe to reply directly to update your record.
+
+### 8. Calorie-Weighted Nutrition & Quality Scoring (0–100)
 - 🥣 **Itemized Breakdown**: Separates composite meals into distinct components with individual macro profiles.
 - ⚖️ **Calorie-Weighted Meal Subtotal Score**: For multi-dish meals, calculates a composite calorie-weighted score ($$\frac{\sum \text{calories}_i \times \text{score}_i}{\sum \text{calories}_i}$$) with dynamic badges (🟢 `≥80`, 🟡 `55–79`, 🔴 `<55`), preventing low-calorie sides from distorting healthy meals.
 - 📈 **Daily Cumulative Score**: Both the post-meal confirmation card (`Today's Cumulative Totals`) and `/today` calculate your overall daily diet score across all meals logged throughout the day.
 - 🥗 **Dietary Fiber & Satiety Metrics**: Evaluates protein-to-calorie density, dietary fiber, whole food quality, and fat-loss adherence.
 
-### 8. In-App User Feedback & Suggestion System
+### 9. In-App User Feedback & Suggestion System
 - 📬 **Multi-Channel Submissions**: Users can send feedback via `/feedback <text>`, `/suggest`, natural language (*"I have a suggestion"*, *"Report a bug"*), or the interactive `[ 💬 Send Feedback ]` button.
 - 🔔 **Instant Admin Push Alerts**: Every submission automatically triggers a real-time Telegram alert message directly to the administrator (`@jamesjjboh`), displaying user handle, time, category, and message text.
 - 📋 **Admin Feedback Viewer (`/viewfeedback`)**: Administrators can review the latest submissions on demand in Telegram.
 - 🗄️ **Persistent Firestore Collection**: Records are stored under `feedback/{feedback_id}` with status tracking.
 
-### 9. Admin Platform Metrics & Engagement Dashboard
+### 10. Admin Platform Metrics & Engagement Dashboard
 - 📈 **Real-Time KPIs (`/metrics`, `/admin`)**: Monitor platform-wide total users, activated user conversion, DAU / WAU / MAU, DAU/MAU habit stickiness, total meals and items logged, and active user leaderboard.
 
 ---
@@ -78,9 +86,11 @@ No need to memorize slash commands! The bot understands natural language directl
 | **Send Single Photo** | _(Upload 1 photo)_ | Multimodal AI vision analysis with itemized macro breakdown. |
 | **Send Multiple Photos (Album)** | _(Upload 2–5 photos at once)_ | Evaluates entire multi-dish spread collectively as **one single meal** without duplicates. |
 | **Reply to Meal** | *"This entry is for lunch"* | Pinpoints and updates the exact quoted meal (ingredients, portions, or category). |
+| **Ask Coaching Advice** | *"How can I improve nutrition score or lower calories?"* | Intelligent culinary and nutrition tips without overwriting meal logs. |
 | **Send Text** | *"Chicken rice with iced tea"* | Zero-shot food parsing and automatic macro estimation. |
 | **Ask Specific Date** | *"What did I eat yesterday?"*, *"25 Sep"* | Instant single-day meal card with items, cumulative macros, and diet score. |
 | **Ask Analytical Q&A** | *"Did I hit my goals this month?"* | Conversational AI analysis citing exact adherence %, averages, and coaching tips. |
+| `/coach` / `/improve` | *"How to make this healthier"*, *"Lower calories"* | On-demand meal coaching and score optimization on quoted or last meal. |
 | `/today` | *"What did I eat today?"* | Cumulative calorie, protein, carb, fat, and fiber totals for today. |
 | `/targets` / `/goals` | *"Change targets"*, *"My goals"* | Set or adjust daily targets with 1-tap presets (Fat Loss, Maintenance, Bulk, Custom). |
 | `/analytics` | *"How did I do this week?"*, *"Weekly"* | Instant 7-day text digest with progress bars, averages, and on-demand chart button. |
@@ -182,15 +192,17 @@ source .venv/bin/activate
 python -m unittest test_bot.py -v
 ```
 
-Tests cover (26 automated unit & integration tests):
+Tests cover (28 automated unit & integration tests):
 * Pydantic schema validation & score boundaries (0–100)
 * Gemini ultra-low-latency model cascade configuration & fallback guarantees
 * In-memory image optimization & high-speed downscaling (`optimize_image_for_vision`)
-* Conversational Intent Router (logging, editing, targets, feedback, analytics, historical date queries, analytical Q&A, export, privacy)
+* Conversational Intent Router (logging, editing, targets, feedback, analytics, historical date queries, analytical Q&A, meal coaching, export, privacy)
 * Conversational date parser (`parse_historical_date`) supporting relative dates, weekdays, smart apostrophes, and ISO formats
 * Historical meal date extraction from captions (`extract_historical_meal_date`) for past-midnight logs
 * Natural language quote-reply date moves across days (`extract_date_override`)
 * Dynamic yesterday and historical summary formatting (`format_telegram_reply_yesterday`)
+* Meal coaching query intent classification & typo tolerance (`is_meal_coaching_query`)
+* Quote-reply routing to nutrition coaching advice vs meal edits (`test_quote_reply_routes_to_coaching`)
 * Historical date query detection (`is_date_lookup`) and single-day summary card generation (`format_specific_date_summary`)
 * Analytical Q&A intent detection (`is_analytics_qa`) for goal achievement, averages, and consistency queries
 * In-chat text-first visual dashboard with Unicode progress bars (`🟩🟩🟩⬜`, `🟨`, `🟧`, `⬜`) and daily adherence

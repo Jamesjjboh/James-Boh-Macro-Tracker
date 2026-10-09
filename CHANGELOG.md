@@ -5,6 +5,20 @@ All notable changes to the **James Boh Macro Tracker** will be documented in thi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-10-09
+
+### Added
+- **Interactive Meal Coaching & Score Optimization (`/coach`, `/improve`)**: Added dedicated culinary and nutrition coaching agent. Users can swipe to reply to any meal card or photo (or ask in chat) with phrases like *"how can I improve nutrition score or lower calories"*, *"how to make this healthier"*, or *"tips to lower calories"*.
+- **Intelligent Quote-Reply Coaching Disambiguation**: Differentiated coaching/advice queries from edit instructions (`is_meal_coaching_query`). Swiping to ask for improvement suggestions no longer falsely triggers meal recalculation, database overwrite, or raw meal dump. Instead, Gemini delivers targeted culinary hacks:
+  - 🥗 **How to Boost Nutrition & Cut Score**: Actionable steps to increase protein density, fiber/greens, and whole food quality.
+  - 📉 **How to Lower Calories**: Practical swaps (e.g. half carbs/rice, sauce on side, skinless chicken) with estimated calorie savings (e.g. -150 to -250 kcal).
+  - 🎯 **Estimated Impact**: Projected calorie reduction and score boost (e.g. ~420 kcal down from 650 kcal | Score 85+ up from 68).
+  - 💡 **One-Tap Edit Follow-up**: Swipe to reply to apply any of the suggested tweaks directly to the log.
+- **Typo & Colloquial Phrasing Tolerance**: Added automatic normalization for common typos (e.g. *"how ti mprove nutrition score"*, *"calroies"*, smart curly apostrophes).
+- **Automated Regression & Unit Tests**: Added `test_is_meal_coaching_query` and `test_quote_reply_routes_to_coaching` in `test_bot.py`, bringing the automated test suite to 28 passing tests.
+
+---
+
 ## [1.4.0] - 2026-10-09
 
 ### Added

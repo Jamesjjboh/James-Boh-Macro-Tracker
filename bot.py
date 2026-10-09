@@ -1377,6 +1377,93 @@ async def answer_analytics_qa_with_gemini(
     raise ValueError("Failed to answer analytical query with Gemini.")
 
 
+async def get_meal_coaching_advice_with_gemini(
+    existing_meal: dict,
+    user_question: str,
+    targets: Optional[dict] = None,
+) -> str:
+    """Provides actionable advice on improving nutrition score or lowering calories for a specific meal."""
+    client = get_gemini_client()
+    targets = targets or {}
+    cal_target = targets.get("daily_calorie_target", 2000)
+    pro_target = targets.get("daily_protein_target", 150)
+    fib_target = targets.get("daily_fiber_target", 25)
+
+    existing_items_summary = []
+    for item in existing_meal.get("items", []):
+        existing_items_summary.append(
+            f"- {item.get('item_name')}: {item.get('calories')} kcal, "
+            f"{item.get('protein')}g P, {item.get('carbohydrates')}g C, "
+            f"{item.get('fat')}g F, {item.get('fiber', 0)}g fiber "
+            f"(Nutrition Score: {item.get('nutrition_score', 'N/A')}/100)"
+        )
+    existing_text = "\n".join(existing_items_summary) or "1 Meal entry"
+    meal_cals = float(existing_meal.get("total_calories", 0.0))
+    meal_pro = float(existing_meal.get("total_protein", 0.0))
+    meal_carbs = float(existing_meal.get("total_carbs", 0.0))
+    meal_fat = float(existing_meal.get("total_fat", 0.0))
+    meal_fiber = float(existing_meal.get("total_fiber", 0.0))
+    meal_score = round(float(existing_meal.get("nutrition_score", 0)))
+
+    system_prompt = (
+        "You are an elite sports nutritionist and practical culinary dietitian for the user's Macro Tracker bot.\n"
+        "The user is asking how to improve their Nutrition & Cut Score (0-100) or lower calories for this specific logged meal.\n"
+        "The Nutrition & Cut Score evaluates:\n"
+        "- Protein-to-calorie density (higher protein per calorie boosts score)\n"
+        "- Dietary fiber and vegetable/whole-food presence (boosting satiety and micronutrients)\n"
+        "- Healthy vs. saturated/trans fats (rewarding healthy unrefined fats, penalizing deep-fried/excessive oils)\n"
+        "- Low refined sugars and refined carbs\n\n"
+        "RULES:\n"
+        "1. Focus specifically on the food items in THIS meal. Provide realistic, real-world culinary hacks (e.g. hawker/restaurant ordering hacks, ingredient swaps, portion cuts).\n"
+        "2. Address both aspects with clear bold headers and emojis:\n"
+        "   - 🥗 <b>How to Boost Nutrition Score</b> (actionable steps: increase protein, add fiber/greens, improve whole food quality)\n"
+        "   - 📉 <b>How to Lower Calories</b> (actionable cuts: half starch/rice/noodles, sauce on side, remove skin/oil, swap drinks) with estimated calorie savings (e.g. -150 to -250 kcal)\n"
+        "3. Provide an Estimated Impact projection: e.g. 🎯 <b>Estimated Impact:</b> ~XXX kcal (down from YYY kcal) | Nutrition Score: ~ZZ/100 (up from WW/100).\n"
+        "4. Format in clean Telegram HTML format (use <b>, <i>, <code>). Do NOT use markdown asterisks (* or **). Never output raw markdown.\n"
+        "5. Keep the advice punchy, clear, encouraging, and under 250 words so it fits beautifully in Telegram chat.\n"
+        "6. Conclude with an edit tip: '💡 <i>Swipe to reply to this card (e.g. <code>Actually had half rice and sauce on side</code>) if you want to update your log!</i>'"
+    )
+
+    prompt = (
+        f"LOGGED MEAL DETAILS:\n"
+        f"Category: {existing_meal.get('category', 'Meal')} ({existing_meal.get('date', '')})\n"
+        f"Total: {meal_cals:.0f} kcal | Protein: {meal_pro:.1f}g | Carbs: {meal_carbs:.1f}g | Fat: {meal_fat:.1f}g | Fiber: {meal_fiber:.1f}g\n"
+        f"Current Nutrition Score: {meal_score}/100\n"
+        f"Items Breakdown:\n{existing_text}\n\n"
+        f"USER'S TARGETS (Reference):\n"
+        f"Daily Calories: {cal_target} kcal | Protein: {pro_target}g | Fiber: {fib_target}g\n\n"
+        f"USER'S QUESTION:\n\"{user_question}\""
+    )
+
+    contents = [system_prompt, prompt]
+    config = types.GenerateContentConfig(
+        temperature=0.3,
+    )
+
+    last_error = None
+    for model_name in GEMINI_CANDIDATE_MODELS:
+        try:
+            response = await asyncio.wait_for(
+                client.aio.models.generate_content(
+                    model=model_name,
+                    contents=contents,
+                    config=config,
+                ),
+                timeout=12.0,
+            )
+            if response.text:
+                return response.text.strip()
+        except Exception as e:
+            logger.warning(f"Model {model_name} failed during meal coaching: {e}. Trying fallback...")
+            last_error = e
+            await asyncio.sleep(0.1)
+            continue
+
+    if last_error:
+        raise last_error
+    raise ValueError("Failed to generate meal coaching advice with Gemini.")
+
+
 # =====================================================================
 # Historical Date Parsing & Analytics Helpers
 # =====================================================================
@@ -1598,6 +1685,72 @@ def is_analytics_qa(text: str) -> bool:
     return False
 
 
+def is_meal_coaching_query(text: str) -> bool:
+    """Determines whether a message is asking for advice on improving nutrition score or lowering calories for a meal."""
+    if not text:
+        return False
+    t = text.strip().lower().replace("’", "'")
+    t = re.sub(r"\bti\s+mprove\b", "to improve", t)
+    t = re.sub(r"\bimrpove\b", "improve", t)
+    t = re.sub(r"\bmprove\b", "improve", t)
+    t = re.sub(r"\bcalroies\b", "calories", t)
+    t = re.sub(r"\bcaloires\b", "calories", t)
+
+    direct_patterns = [
+        "improve nutrition score",
+        "improve score",
+        "improve the score",
+        "higher nutrition score",
+        "better nutrition score",
+        "boost nutrition score",
+        "increase nutrition score",
+        "higher score",
+        "better score",
+        "boost score",
+        "increase score",
+        "lower calories",
+        "lower calorie",
+        "cut calories",
+        "reduce calories",
+        "fewer calories",
+        "less calories",
+        "drop calories",
+        "make this healthier",
+        "make it healthier",
+        "make meal healthier",
+        "healthier version",
+        "healthier option",
+        "healthier choice",
+        "improve this meal",
+        "improve the meal",
+        "improve my meal",
+    ]
+    if any(p in t for p in direct_patterns):
+        return True
+
+    if "nutrition score" in t and any(w in t for w in ["how", "improve", "raise", "increase", "better", "higher", "boost", "get", "what", "tips", "advice"]):
+        return True
+
+    has_advice = any(k in t for k in [
+        "how to", "how can i", "how do i", "how i can", "how could i", "how would i",
+        "tips to", "tips for", "tip to", "advice on", "advice to",
+        "suggestions to", "suggest ways to", "ways to",
+        "what can i do to", "can i make this", "can i make it",
+    ])
+    has_action = any(k in t for k in [
+        "improve", "lower", "reduce", "cut", "increase", "boost", "raise", "optimize", "healthier"
+    ])
+    has_topic = any(k in t for k in [
+        "score", "nutrition", "calorie", "calories", "macro", "macros", "protein", "fiber", "fat", "meal"
+    ])
+
+    if has_advice and (has_action or has_topic):
+        if not any(k in t for k in ["change to", "switch to", "mark as", "actually", "category to"]):
+            return True
+
+    return False
+
+
 def format_specific_date_summary(
     date_obj: date,
     meals: List[dict],
@@ -1748,6 +1901,10 @@ def classify_text_intent(text: str) -> str:
     ]
     if t in target_commands or t.startswith(("set target", "set goal", "change target", "change goal", "edit target")):
         return "targets"
+
+    # 5.5 Meal Improvement & Coaching Advice (e.g. 'how to improve nutrition score or lower calories')
+    if is_meal_coaching_query(t):
+        return "meal_coaching"
 
     # 6. Meal Editing / Corrections / Category Updates
     edit_prefixes = (
@@ -1995,6 +2152,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "  - Or type: <code>Actually no sugar in the tea</code>\n"
         "  - <code>/edit change chicken to 250g</code>\n"
         "  - <code>/undo</code> - Instantly delete your last logged meal\n\n"
+        "• <b>Meal Coaching & Nutrition Advice:</b>\n"
+        "  - Swipe/reply to any meal card or photo: <i>'how can I improve nutrition score or lower calories'</i>\n"
+        "  - Or ask: <i>'how to make this healthier'</i>, <i>'how to lower calories'</i>, <code>/coach</code>\n\n"
         "• <b>Daily Targets & Goals:</b>\n"
         "  - <code>/targets</code> or <code>/goals</code> - Set goals with 1-tap presets (Fat Loss, Maintenance, Bulk, Custom)\n"
         "  - Or type: <code>/targets 1800 140 25</code> (Calories, Protein, Fiber)\n"
@@ -2475,6 +2635,29 @@ async def edit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "• <i>'Remove the soup'</i>",
             parse_mode=ParseMode.HTML,
         )
+
+
+async def coach_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles /coach or /improve command for meal coaching advice."""
+    if not is_user_authorized(update):
+        await update.message.reply_text("⛔ You are not authorized to use this bot.")
+        return
+
+    user_name = get_user_display_name(update)
+    chat_id = update.effective_chat.id
+    target_meal = None
+
+    reply_to = update.message.reply_to_message
+    if reply_to:
+        target_meal = await firestore_service.find_meal_by_message_id(chat_id, reply_to.message_id)
+        if not target_meal and reply_to.from_user and reply_to.from_user.is_bot:
+            target_meal = await firestore_service.get_last_meal(chat_id)
+
+    raw_text = update.message.text or ""
+    _, _, custom_q = raw_text.partition(" ")
+    custom_q = custom_q.strip()
+    question = custom_q if custom_q else "How can I improve my nutrition score or lower calories for this meal?"
+    await handle_meal_coaching(update, context, chat_id, user_name, question, target_meal=target_meal)
 
 
 async def log_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -3324,6 +3507,66 @@ async def handle_analytics_qa(
         )
 
 
+async def handle_meal_coaching(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    user_name: str,
+    user_question: str,
+    target_meal: Optional[dict] = None,
+) -> None:
+    """Analyzes a specific meal and provides actionable coaching advice on improving nutrition score or lowering calories."""
+    if not target_meal:
+        target_meal = await firestore_service.get_last_meal(chat_id)
+
+    if not target_meal:
+        await update.message.reply_text(
+            "ℹ️ <b>No Meals Found to Evaluate</b>\n\n"
+            "You haven't logged any meals yet. Snap a photo or type what you ate to log your first meal, then ask how to improve it!",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    status_msg = await update.message.reply_text(
+        "💡 <i>Analyzing meal improvements with Gemini AI...</i>",
+        parse_mode=ParseMode.HTML,
+    )
+
+    try:
+        profile = await firestore_service.get_user_profile(chat_id)
+        advice_html = await get_meal_coaching_advice_with_gemini(
+            existing_meal=target_meal,
+            user_question=user_question,
+            targets=profile,
+        )
+
+        meal_cat = target_meal.get("category", "Meal")
+        meal_cals = float(target_meal.get("total_calories", 0.0))
+        meal_score = round(float(target_meal.get("nutrition_score", 0)))
+        badge = get_score_badge(meal_score)
+        meal_date = target_meal.get("date", "")
+
+        header = (
+            f"💡 <b>Meal Coaching & Calorie Optimization</b>\n"
+            f"🍽️ <b>Evaluating:</b> {html.escape(meal_cat)} ({meal_date}) — <b>{meal_cals:,.0f} kcal</b> | {badge} <b>Score: {meal_score}/100</b>\n\n"
+        )
+
+        final_reply = header + advice_html
+        await status_msg.edit_text(final_reply, parse_mode=ParseMode.HTML)
+    except Exception as e:
+        logger.error(f"Meal coaching failed: {e}", exc_info=True)
+        err_msg = str(e)
+        if "503" in err_msg or "UNAVAILABLE" in err_msg or "high demand" in err_msg:
+            user_friendly_err = (
+                "⚠️ <b>AI Service High Demand</b>\n\n"
+                "Google's Gemini servers are experiencing a brief spike in traffic. "
+                "Please wait a few seconds and try asking again."
+            )
+        else:
+            user_friendly_err = f"❌ Could not analyze meal: {html.escape(str(e))}"
+        await status_msg.edit_text(user_friendly_err, parse_mode=ParseMode.HTML)
+
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Intelligent Conversational Router:
@@ -3372,6 +3615,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     # Check if user is in an active edit prompt flow (e.g. from /edit without arguments)
     if context.user_data.get("awaiting_edit"):
         context.user_data["awaiting_edit"] = False
+        if is_meal_coaching_query(text):
+            await handle_meal_coaching(update, context, chat_id, user_name, text)
+            return
         await execute_meal_edit(update, context, chat_id, user_name, text)
         return
 
@@ -3390,6 +3636,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             target_meal = await firestore_service.get_last_meal(chat_id)
 
         if target_meal:
+            if is_meal_coaching_query(text):
+                await handle_meal_coaching(update, context, chat_id, user_name, text, target_meal=target_meal)
+                return
             await execute_meal_edit(update, context, chat_id, user_name, text, target_meal=target_meal)
             return
 
@@ -3398,6 +3647,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     if intent == "today":
         await today_command(update, context)
+    elif intent == "meal_coaching":
+        await handle_meal_coaching(update, context, chat_id, user_name, text)
     elif intent == "undo":
         await undo_command(update, context)
     elif intent == "export":
@@ -3493,6 +3744,8 @@ def main() -> None:
 
     # Smart Editing & Meal Management Commands
     app.add_handler(CommandHandler("edit", edit_command))
+    app.add_handler(CommandHandler("coach", coach_command))
+    app.add_handler(CommandHandler("improve", coach_command))
     app.add_handler(CommandHandler("undo", undo_command))
     app.add_handler(CommandHandler("log", log_command))
     app.add_handler(CommandHandler("targets", targets_command))
