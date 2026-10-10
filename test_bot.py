@@ -399,6 +399,65 @@ class TestMacroTrackerBot(unittest.TestCase):
             )
             mock_edit.assert_not_called()
 
+    def test_quote_reply_to_photo_routes_to_coaching(self):
+        """Verify that replying directly to an uploaded food photo calls handle_meal_coaching."""
+        from unittest.mock import AsyncMock, patch
+        from bot import handle_text
+
+        mock_update = MagicMock()
+        mock_update.message.text = "can you make this healthier"
+        mock_update.message.reply_to_message = MagicMock()
+        mock_update.message.reply_to_message.message_id = 888
+        mock_update.message.reply_to_message.from_user.is_bot = False
+        mock_update.effective_chat.id = 102325434
+        mock_update.effective_user.username = "test_user"
+
+        mock_context = MagicMock()
+        mock_context.user_data = {}
+
+        target_meal_sample = {"id": "sample_meal_2", "category": "Lunch", "items": []}
+
+        with patch("bot.firestore_service.find_meal_by_message_id", new_callable=AsyncMock) as mock_find, \
+             patch("bot.firestore_service.get_last_meal", new_callable=AsyncMock) as mock_last, \
+             patch("bot.handle_meal_coaching", new_callable=AsyncMock) as mock_coaching, \
+             patch("bot.execute_meal_edit", new_callable=AsyncMock) as mock_edit:
+            mock_find.return_value = target_meal_sample
+            asyncio.run(handle_text(mock_update, mock_context))
+            mock_coaching.assert_called_once_with(
+                mock_update, mock_context, 102325434, "@test_user", "can you make this healthier", target_meal=target_meal_sample
+            )
+            mock_edit.assert_not_called()
+
+    def test_quote_reply_to_bot_card_fallback_routes_to_coaching(self):
+        """Verify that replying to a bot card when message ID lookup fails falls back to last meal."""
+        from unittest.mock import AsyncMock, patch
+        from bot import handle_text
+
+        mock_update = MagicMock()
+        mock_update.message.text = "how to lower calories"
+        mock_update.message.reply_to_message = MagicMock()
+        mock_update.message.reply_to_message.message_id = 777
+        mock_update.message.reply_to_message.from_user.is_bot = True
+        mock_update.effective_chat.id = 102325434
+        mock_update.effective_user.username = "test_user"
+
+        mock_context = MagicMock()
+        mock_context.user_data = {}
+
+        last_meal_sample = {"id": "sample_meal_recent", "category": "Breakfast", "items": []}
+
+        with patch("bot.firestore_service.find_meal_by_message_id", new_callable=AsyncMock) as mock_find, \
+             patch("bot.firestore_service.get_last_meal", new_callable=AsyncMock) as mock_last, \
+             patch("bot.handle_meal_coaching", new_callable=AsyncMock) as mock_coaching, \
+             patch("bot.execute_meal_edit", new_callable=AsyncMock) as mock_edit:
+            mock_find.return_value = None
+            mock_last.return_value = last_meal_sample
+            asyncio.run(handle_text(mock_update, mock_context))
+            mock_coaching.assert_called_once_with(
+                mock_update, mock_context, 102325434, "@test_user", "how to lower calories", target_meal=last_meal_sample
+            )
+            mock_edit.assert_not_called()
+
     def test_analytics_chart_generation(self):
         """Verify Matplotlib headless generation produces a non-empty PNG buffer."""
         mock_records = [
@@ -742,9 +801,18 @@ class TestMacroTrackerBot(unittest.TestCase):
         self.assertTrue(is_meal_coaching_query("ask how I can improve nutrition score or lower calories"))
         self.assertTrue(is_meal_coaching_query("how I can improve nutrition score or lower calories"))
         self.assertTrue(is_meal_coaching_query("how ti mprove nutrition score or lower calories"))
+        self.assertTrue(is_meal_coaching_query("how to improve nutrition score or lower calories"))
         self.assertTrue(is_meal_coaching_query("how can i improve nutrition score"))
         self.assertTrue(is_meal_coaching_query("how to lower calories"))
         self.assertTrue(is_meal_coaching_query("how to make this healthier"))
+        self.assertTrue(is_meal_coaching_query("how to make it better"))
+        self.assertTrue(is_meal_coaching_query("can you make this healthier"))
+        self.assertTrue(is_meal_coaching_query("why is my score 68"))
+        self.assertTrue(is_meal_coaching_query("suggestions to reduce fat"))
+        self.assertTrue(is_meal_coaching_query("how do i boost protein"))
+        self.assertTrue(is_meal_coaching_query("is this meal healthy?"))
+        self.assertTrue(is_meal_coaching_query("tell me how to get higher score"))
+        self.assertTrue(is_meal_coaching_query("improve this dish"))
         self.assertTrue(is_meal_coaching_query("any tips to lower calories in this meal?"))
         self.assertTrue(is_meal_coaching_query("how can I get a higher score"))
         self.assertTrue(is_meal_coaching_query("how do I get more protein in this meal?"))
@@ -757,6 +825,11 @@ class TestMacroTrackerBot(unittest.TestCase):
         self.assertFalse(is_meal_coaching_query("chicken rice for lunch"))
         self.assertFalse(is_meal_coaching_query("what did i eat yesterday"))
         self.assertFalse(is_meal_coaching_query("did i hit my calorie goals for the past month"))
+        self.assertFalse(is_meal_coaching_query("2. Chickpea mushroom soup\n3. Hot milo"))
+        self.assertFalse(is_meal_coaching_query("date: yesterday"))
+        self.assertFalse(is_meal_coaching_query("no sugar"))
+        self.assertFalse(is_meal_coaching_query("only ate half"))
+        self.assertFalse(is_meal_coaching_query("this was for yesterday"))
         self.assertFalse(is_meal_coaching_query(None))
         self.assertFalse(is_meal_coaching_query(""))
 

@@ -1696,57 +1696,69 @@ def is_meal_coaching_query(text: str) -> bool:
     t = re.sub(r"\bcalroies\b", "calories", t)
     t = re.sub(r"\bcaloires\b", "calories", t)
 
+    # If it is clearly an explicit food/date/category modification instruction, guard against coaching
+    is_explicit_edit = any(t.startswith(p) for p in [
+        "actually", "wait", "change to lunch", "change to dinner", "change to breakfast", "change to snack",
+        "this is for lunch", "this is for dinner", "this is for breakfast", "this is for snack",
+        "this entry is for", "this was for", "mark as", "switch to", "move to", "date:",
+        "no sugar", "remove the", "instead of", "only ate", "ate half", "ate only"
+    ])
+    if is_explicit_edit:
+        return False
+
+    # 1. Direct keywords and phrases
     direct_patterns = [
-        "improve nutrition score",
-        "improve score",
-        "improve the score",
-        "higher nutrition score",
-        "better nutrition score",
-        "boost nutrition score",
-        "increase nutrition score",
-        "higher score",
-        "better score",
-        "boost score",
-        "increase score",
-        "lower calories",
-        "lower calorie",
-        "cut calories",
-        "reduce calories",
-        "fewer calories",
-        "less calories",
-        "drop calories",
-        "make this healthier",
-        "make it healthier",
-        "make meal healthier",
-        "healthier version",
-        "healthier option",
-        "healthier choice",
-        "improve this meal",
-        "improve the meal",
-        "improve my meal",
+        "improve nutrition score", "improve score", "improve the score", "improve my score",
+        "higher nutrition score", "better nutrition score", "boost nutrition score", "increase nutrition score",
+        "higher score", "better score", "boost score", "increase score", "raise score", "score higher",
+        "lower calories", "lower calorie", "cut calories", "cut calorie", "reduce calories", "reduce calorie",
+        "fewer calories", "less calories", "drop calories", "decrease calories",
+        "make this healthier", "make it healthier", "make meal healthier", "make food healthier",
+        "make this healthy", "make it healthy",
+        "make this better", "make it better", "make food better", "make meal better",
+        "healthier version", "healthier option", "healthier choice", "healthier alternative",
+        "improve this meal", "improve the meal", "improve my meal", "improve meal",
+        "improve this dish", "improve the dish", "improve dish",
+        "improve this food", "improve the food", "improve food",
+        "improve this", "improve it", "how to improve", "how can i improve", "how do i improve",
+        "how to lower", "how can i lower", "how do i lower",
+        "how to cut", "how can i cut", "how do i cut",
+        "how to reduce", "how can i reduce", "how do i reduce",
+        "nutrition score",
     ]
     if any(p in t for p in direct_patterns):
         return True
 
-    if "nutrition score" in t and any(w in t for w in ["how", "improve", "raise", "increase", "better", "higher", "boost", "get", "what", "tips", "advice"]):
+    # 2. Score questions
+    if "score" in t and any(w in t for w in [
+        "how", "what", "why", "improve", "raise", "increase", "better", "higher", "boost",
+        "get", "tips", "advice", "suggestion", "suggestions", "low", "high", "green", "badge", "above", "80"
+    ]):
         return True
 
+    # 3. Explicit coaching requests: advice words + action + nutrition topic
     has_advice = any(k in t for k in [
-        "how to", "how can i", "how do i", "how i can", "how could i", "how would i",
-        "tips to", "tips for", "tip to", "advice on", "advice to",
-        "suggestions to", "suggest ways to", "ways to",
-        "what can i do to", "can i make this", "can i make it",
+        "how", "what", "why", "can", "could", "should", "would", "is", "are",
+        "tips", "tip", "advice", "suggestion", "suggestions", "suggest", "recommend", "recommendation",
+        "tell", "give", "ways", "way"
     ])
     has_action = any(k in t for k in [
-        "improve", "lower", "reduce", "cut", "increase", "boost", "raise", "optimize", "healthier"
+        "improve", "improved", "improving", "lower", "lowering", "reduce", "reducing", "cut", "cutting",
+        "increase", "boost", "raise", "optimize", "better", "healthier", "healthy", "cleaner", "leaner",
+        "drop", "decrease", "more", "get", "add", "higher"
     ])
     has_topic = any(k in t for k in [
-        "score", "nutrition", "calorie", "calories", "macro", "macros", "protein", "fiber", "fat", "meal"
+        "score", "nutrition", "calorie", "calories", "cal", "cals", "macro", "macros", "protein", "fiber",
+        "fat", "carb", "carbs", "sugar", "meal", "food", "dish", "badge", "green"
     ])
 
-    if has_advice and (has_action or has_topic):
-        if not any(k in t for k in ["change to", "switch to", "mark as", "actually", "category to"]):
-            return True
+    if has_advice and has_action and has_topic:
+        return True
+
+    # Coaching advice explicitly requested for meal/food/dish
+    has_coaching_noun = any(k in t for k in ["advice", "tips", "tip", "suggestion", "suggestions", "feedback"])
+    if has_coaching_noun and any(k in t for k in ["meal", "food", "dish", "this"]):
+        return True
 
     return False
 
@@ -3585,6 +3597,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     first_name = update.effective_user.first_name or "" if update.effective_user else ""
     asyncio.create_task(firestore_service.touch_user_activity(chat_id, user_name, first_name))
 
+    reply_to = update.message.reply_to_message
+    logger.info(
+        f"Incoming text from {user_name} ({chat_id}): '{text}', "
+        f"is_reply={bool(reply_to)}, is_coaching={is_meal_coaching_query(text)}"
+    )
+
     # Check if user is in an active targets prompt flow
     if context.user_data.get("awaiting_targets"):
         context.user_data["awaiting_targets"] = False
@@ -3628,19 +3646,25 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     # Check if message is a Quote/Reply to an existing message
-    reply_to = update.message.reply_to_message
     if reply_to:
-        target_meal = await firestore_service.find_meal_by_message_id(chat_id, reply_to.message_id)
-        if not target_meal and reply_to.from_user and reply_to.from_user.is_bot:
-            # If replied to bot meal card or prompt, target the most recent meal
-            target_meal = await firestore_service.get_last_meal(chat_id)
-
-        if target_meal:
-            if is_meal_coaching_query(text):
-                await handle_meal_coaching(update, context, chat_id, user_name, text, target_meal=target_meal)
-                return
-            await execute_meal_edit(update, context, chat_id, user_name, text, target_meal=target_meal)
+        # 1. Coaching / Advice queries on quoted meal or bot confirmation
+        if is_meal_coaching_query(text):
+            target_meal = await firestore_service.find_meal_by_message_id(chat_id, reply_to.message_id)
+            if not target_meal and reply_to.from_user and reply_to.from_user.is_bot:
+                target_meal = await firestore_service.get_last_meal(chat_id)
+            await handle_meal_coaching(update, context, chat_id, user_name, text, target_meal=target_meal)
             return
+
+        # 2. Guard against routing global intents as meal edits (e.g. today, undo, export)
+        intent_check = classify_text_intent(text)
+        if intent_check not in ["today", "undo", "export", "delete", "privacy", "targets", "analytics_7d", "analytics_30d"]:
+            target_meal = await firestore_service.find_meal_by_message_id(chat_id, reply_to.message_id)
+            if not target_meal and reply_to.from_user and reply_to.from_user.is_bot:
+                target_meal = await firestore_service.get_last_meal(chat_id)
+
+            if target_meal:
+                await execute_meal_edit(update, context, chat_id, user_name, text, target_meal=target_meal)
+                return
 
     # Classify intent via Natural Language Router
     intent = classify_text_intent(text)

@@ -5,6 +5,16 @@ All notable changes to the **James Boh Macro Tracker** will be documented in thi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.1] - 2026-10-10
+
+### Fixed
+- **Robust Intent Detection for Meal Log Quote-Replies**: Resolved an issue where swiping to reply to the bot's generated meal log message (or photo) with conversational coaching questions (e.g. *"how I can improve nutrition score or lower calories"*, *"how to make it better"*, *"can you make this healthier"*, *"why is my score low"*) fell through to `execute_meal_edit` and triggered unwanted meal recalculation cards.
+- **Explicit Edit Guards & Topic Disambiguation**: Added explicit prefix guards (`actually`, `wait`, `change to`, `move to`, `no sugar`, `ate half`, `instead of`) and balanced query matching requiring action verbs + nutrition topics, preventing conversational coaching from ever colliding with standard meal editing or broad status inquiries (*"how did I do this week"*).
+- **Diagnostic Cloud Run Logging**: Added structured runtime logging in `handle_text` capturing incoming text, reply context, and coaching classification decisions.
+- **Automated Regression Tests**: Expanded `test_is_meal_coaching_query` and added `test_quote_reply_to_photo_routes_to_coaching` and `test_quote_reply_to_bot_card_fallback_routes_to_coaching`, expanding the test suite to 30 passing tests.
+
+---
+
 ## [1.5.0] - 2026-10-09
 
 ### Added
